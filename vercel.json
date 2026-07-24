@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "vite build",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/index.js": { "maxDuration": 30 },
+    "api/parse.py": { "maxDuration": 30, "memory": 1024 }
+  },
+  "rewrites": [
+    { "source": "/api/:path((?!parse).*)", "destination": "/api" }
+  ]
+}
