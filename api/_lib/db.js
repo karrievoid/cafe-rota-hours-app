@@ -62,10 +62,12 @@ CREATE TABLE IF NOT EXISTS shifts (
   end_min       INT,
   paid_minutes  INT NOT NULL DEFAULT 0,
   overridden    BOOLEAN NOT NULL DEFAULT false, -- true once a human edits it
+  no_break      BOOLEAN NOT NULL DEFAULT false, -- 20-min break waived for this shift
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_shifts_month ON shifts(month_id);
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS no_break BOOLEAN NOT NULL DEFAULT false;
 `;
 
 let initPromise;

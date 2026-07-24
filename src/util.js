@@ -64,11 +64,17 @@ export function fmtDateFull(iso) {
 // Local mirror of the server break rule, so totals update live before saving.
 export const BREAK_MIN = 20;
 export const BREAK_THRESHOLD_MIN = 6 * 60; // strictly over 6h loses the break
-export function localPaidMinutes(status, startMin, endMin, leaveMinutes) {
+export function localPaidMinutes(status, startMin, endMin, leaveMinutes, noBreak) {
   if (status === 'leave') return Math.max(0, leaveMinutes || 0);
   if (status !== 'work') return 0;
   if (startMin == null || endMin == null) return 0;
   const span = endMin - startMin;
   if (span <= 0) return 0;
+  if (noBreak) return span; // break waived
   return span > BREAK_THRESHOLD_MIN ? span - BREAK_MIN : span;
+}
+
+// Does this shift qualify for a break (strictly over 6h)?
+export function isOver6h(startMin, endMin) {
+  return startMin != null && endMin != null && (endMin - startMin) > BREAK_THRESHOLD_MIN;
 }

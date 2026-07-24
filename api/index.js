@@ -40,7 +40,7 @@ function rowToShift(r) {
     id: r.id, monthId: r.month_id, personKey: r.person_key, personName: r.person_name,
     personLabel: r.person_label, workDate: dstr(r.work_date), rawText: r.raw_text,
     status: r.status, startMin: r.start_min, endMin: r.end_min,
-    paidMinutes: r.paid_minutes, overridden: r.overridden,
+    paidMinutes: r.paid_minutes, overridden: r.overridden, noBreak: r.no_break,
   };
 }
 
@@ -230,16 +230,17 @@ app.patch('/api/shifts/:id', requireAuth, async (req, res, next) => {
     if (!cur.rows.length) return res.status(404).json({ error: 'Shift not found' });
     const s = cur.rows[0];
 
-    let { startMin, endMin, status, paidMinutes, personLabel } = req.body;
+    let { startMin, endMin, status, paidMinutes, personLabel, noBreak } = req.body;
     status = status ?? s.status;
     startMin = startMin === undefined ? s.start_min : startMin;
     endMin = endMin === undefined ? s.end_min : endMin;
+    const effNoBreak = noBreak === undefined ? s.no_break : !!noBreak;
 
     let paid = s.paid_minutes;
     if (paidMinutes !== undefined && paidMinutes !== null) paid = Math.max(0, Math.round(paidMinutes));
     else if (status === 'work' && startMin != null && endMin != null) {
       const span = endMin - startMin;
-      paid = span > 0 ? paidMinutesFromSpan(span) : 0;
+      paid = span > 0 ? paidMinutesFromSpan(span, effNoBreak) : 0;
     } else if (status === 'off') paid = 0;
 
     if (personLabel !== undefined) {
@@ -248,28 +249,29 @@ app.patch('/api/shifts/:id', requireAuth, async (req, res, next) => {
     }
 
     const upd = await query(
-      `UPDATE shifts SET start_min=$1, end_min=$2, status=$3, paid_minutes=$4, overridden=true
-         WHERE id=$5 RETURNING *`, [startMin, endMin, status, paid, id]);
+      `UPDATE shifts SET start_min=$1, end_min=$2, status=$3, paid_minutes=$4, no_break=$5, overridden=true
+         WHERE id=$6 RETURNING *`, [startMin, endMin, status, paid, effNoBreak, id]);
     res.json(rowToShift(upd.rows[0]));
   } catch (e) { next(e); }
 });
 
 app.post('/api/shifts', requireAuth, async (req, res, next) => {
   try {
-    const { monthId, personKey, personName, personLabel, workDate, startMin, endMin, status } = req.body;
+    const { monthId, personKey, personName, personLabel, workDate, startMin, endMin, status, noBreak } = req.body;
     if (!monthId || !personKey || !workDate) {
       return res.status(400).json({ error: 'monthId, personKey and workDate are required' });
     }
     const st = status || 'work';
+    const nb = !!noBreak;
     let paid = 0;
     if (st === 'work' && startMin != null && endMin != null && endMin > startMin) {
-      paid = paidMinutesFromSpan(endMin - startMin);
+      paid = paidMinutesFromSpan(endMin - startMin, nb);
     }
     const ins = await query(
-      `INSERT INTO shifts (month_id, person_key, person_name, person_label, work_date, raw_text, status, start_min, end_min, paid_minutes, overridden)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true) RETURNING *`,
+      `INSERT INTO shifts (month_id, person_key, person_name, person_label, work_date, raw_text, status, start_min, end_min, paid_minutes, no_break, overridden)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true) RETURNING *`,
       [monthId, personKey, personName || personKey, personLabel || null, workDate, 'manual', st,
-       startMin ?? null, endMin ?? null, paid]);
+       startMin ?? null, endMin ?? null, paid, nb]);
     res.status(201).json(rowToShift(ins.rows[0]));
   } catch (e) { next(e); }
 });

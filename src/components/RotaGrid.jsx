@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import { api } from '../api.js';
 import { toast } from '../toast.js';
-import { minToTime, timeToMin, minToHours, fmtDate, localPaidMinutes } from '../util.js';
+import { minToTime, timeToMin, minToHours, fmtDate, localPaidMinutes, isOver6h } from '../util.js';
 import Summary from './Summary.jsx';
 
 // Editable rota with MANUAL save and TWO layouts that share the same staged
@@ -23,7 +23,7 @@ const RotaGrid = forwardRef(function RotaGrid({ shifts, month, onDirtyChange, on
     setDeleted([]);
     original.current = new Map(shifts.map((s) => [s.id, {
       status: s.status, startMin: s.startMin, endMin: s.endMin,
-      paidMinutes: s.paidMinutes, personLabel: s.personLabel || '',
+      paidMinutes: s.paidMinutes, personLabel: s.personLabel || '', noBreak: !!s.noBreak,
     }]));
   }, [shifts]);
 
@@ -34,7 +34,8 @@ const RotaGrid = forwardRef(function RotaGrid({ shifts, month, onDirtyChange, on
       const o = original.current.get(r.id);
       if (!o) return true;
       if (r.status !== o.status || r.startMin !== o.startMin || r.endMin !== o.endMin
-        || r.paidMinutes !== o.paidMinutes || (r.personLabel || '') !== o.personLabel) return true;
+        || r.paidMinutes !== o.paidMinutes || (r.personLabel || '') !== o.personLabel
+        || (!!r.noBreak) !== (!!o.noBreak)) return true;
     }
     return false;
   }, [rows, deleted]);
@@ -59,16 +60,16 @@ const RotaGrid = forwardRef(function RotaGrid({ shifts, month, onDirtyChange, on
           await api.addShift({
             monthId: month.id, personKey: r.personKey, personName: r.personName,
             personLabel: r.personLabel, workDate: r.workDate, status: r.status,
-            startMin: r.startMin, endMin: r.endMin,
+            startMin: r.startMin, endMin: r.endMin, noBreak: !!r.noBreak,
           });
           continue;
         }
         const o = original.current.get(r.id);
         const timeChanged = !o || r.status !== o.status || r.startMin !== o.startMin
-          || r.endMin !== o.endMin || r.paidMinutes !== o.paidMinutes;
+          || r.endMin !== o.endMin || r.paidMinutes !== o.paidMinutes || (!!r.noBreak) !== (!!o.noBreak);
         if (timeChanged) {
           let payload;
-          if (r.status === 'work') payload = { status: 'work', startMin: r.startMin, endMin: r.endMin };
+          if (r.status === 'work') payload = { status: 'work', startMin: r.startMin, endMin: r.endMin, noBreak: !!r.noBreak };
           else if (r.status === 'leave') payload = { status: 'leave', paidMinutes: r.paidMinutes };
           else payload = { status: 'off', paidMinutes: 0 };
           await api.updateShift(r.id, payload);
@@ -87,7 +88,7 @@ const RotaGrid = forwardRef(function RotaGrid({ shifts, month, onDirtyChange, on
   useImperativeHandle(ref, () => ({ isDirty: () => dirty, save, discard }), [dirty, rows, deleted]);
 
   // ---- shared local edit helpers ----
-  const recompute = (r) => ({ ...r, paidMinutes: localPaidMinutes(r.status, r.startMin, r.endMin, r.paidMinutes) });
+  const recompute = (r) => ({ ...r, paidMinutes: localPaidMinutes(r.status, r.startMin, r.endMin, r.paidMinutes, r.noBreak) });
   function patchRow(id, patch) { setRows((rs) => rs.map((r) => (r.id === id ? recompute({ ...r, ...patch }) : r))); }
   function renamePerson(personKey, label) { setRows((rs) => rs.map((r) => (r.personKey === personKey ? { ...r, personLabel: label } : r))); }
   function setLeaveBulk(personKey, hours) {
@@ -98,7 +99,7 @@ const RotaGrid = forwardRef(function RotaGrid({ shifts, month, onDirtyChange, on
     return recompute({
       id: `new-${newCounter.current++}`, personKey: person.personKey, personName: person.personName,
       personLabel: person.personLabel || null, workDate: date, rawText: 'manual', status: 'work',
-      startMin: 9 * 60, endMin: 15 * 60, paidMinutes: 0,
+      startMin: 9 * 60, endMin: 15 * 60, paidMinutes: 0, noBreak: false,
     });
   }
   function addAtEnd(group) {
@@ -286,10 +287,18 @@ function WeekCell({ shift, date, person, onPatch, onAddAt }) {
           <div className="wc-times">
             <input type="time" value={minToTime(shift.startMin)}
               onChange={(e) => onPatch(shift.id, { status: 'work', startMin: timeToMin(e.target.value) })} />
+            <span className="dash">-</span>
             <input type="time" value={minToTime(shift.endMin)}
               onChange={(e) => onPatch(shift.id, { status: 'work', endMin: timeToMin(e.target.value) })} />
           </div>
-          <div className="wc-h">{minToHours(shift.paidMinutes).toFixed(2)}h</div>
+          <div className="wc-foot">
+            <span className="wc-h">{minToHours(shift.paidMinutes).toFixed(2)}h</span>
+            {isOver6h(shift.startMin, shift.endMin) && (
+              <button type="button" className={`nobreak ${shift.noBreak ? 'on' : ''}`}
+                title="Tick if the 20-min break was not taken - pays the full time"
+                onClick={() => onPatch(shift.id, { status: 'work', noBreak: !shift.noBreak })}>no break</button>
+            )}
+          </div>
         </div>
       )}
       {status === 'leave' && (
@@ -365,6 +374,11 @@ function ShiftRow({ row, onPatch, onDelete }) {
           <input type="time" value={minToTime(row.startMin)} onChange={(e) => onPatch(row.id, { status: 'work', startMin: timeToMin(e.target.value) })} />
           <span className="dash">-</span>
           <input type="time" value={minToTime(row.endMin)} onChange={(e) => onPatch(row.id, { status: 'work', endMin: timeToMin(e.target.value) })} />
+          {isOver6h(row.startMin, row.endMin) && (
+            <button type="button" className={`nobreak ${row.noBreak ? 'on' : ''}`}
+              title="Tick if the 20-min break was not taken - pays the full time"
+              onClick={() => onPatch(row.id, { status: 'work', noBreak: !row.noBreak })}>no break</button>
+          )}
         </span>
       )}
       {status === 'leave' && (

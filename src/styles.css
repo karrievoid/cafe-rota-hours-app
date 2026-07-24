@@ -184,49 +184,68 @@ input[type=time], input[type=date] { padding: 0.3rem 0.4rem; }
 .view-toggle button { background: #fff; border: none; padding: 0.4rem 0.9rem; color: var(--muted); font-weight: 600; }
 .view-toggle button.active { background: var(--brand); color: #fff; }
 
-/* ---- Weekly grid (clean: no vertical rules, quiet controls) ---- */
-.card.week { padding: 0; overflow: hidden; }
-.grid-scroll { overflow-x: auto; }
-.wgrid { border-collapse: collapse; width: 100%; }
-.wgrid thead th { background: #faf7f2; color: var(--muted); font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 0.55rem 0.4rem; border-bottom: 1px solid var(--line); white-space: nowrap; text-align: center; }
-.wgrid tbody td { border-bottom: 1px solid var(--line); padding: 0.35rem 0.3rem; vertical-align: middle; text-align: center; }
+/* ---- Weekly grid (fitted, zebra columns, sticky header) ---- */
+.card.week { padding: 0; }
+.grid-scroll { overflow: visible; }
+.wgrid { border-collapse: separate; border-spacing: 0; width: 100%; table-layout: fixed; }
+
+/* header row sticks just below the sticky Save bar as you scroll a long week */
+.wgrid thead th { position: sticky; top: 54px; z-index: 3; font-size: 0.84rem; font-weight: 700; color: var(--ink); padding: 0.5rem 0.3rem; border-bottom: 2px solid var(--line); white-space: nowrap; text-align: center; }
+.wgrid tbody td { border-bottom: 1px solid var(--line); padding: 0.3rem 0.25rem; vertical-align: middle; text-align: center; }
 .wgrid tbody tr:last-child td { border-bottom: none; }
 
-.wname.sticky { position: sticky; left: 0; z-index: 1; background: #fff; text-align: left; min-width: 120px; box-shadow: 1px 0 0 var(--line); }
-thead .wname.sticky, tfoot .wname.sticky { background: #faf7f2; }
-.wname-input { width: 112px; border: 1px solid transparent; background: transparent; font-weight: 600; font-size: 0.88rem; padding: 0.3rem; border-radius: 6px; color: var(--ink); }
+/* zebra day columns: white / soft yellow, top to bottom */
+.wgrid .col-a { background: #ffffff; }
+.wgrid .col-b { background: #fdf9ee; }
+.wgrid thead th.col-a { background: #f3ede3; }
+.wgrid thead th.col-b { background: #efe6d3; }
+.wgrid tfoot td.col-a { background: #faf7f2; }
+.wgrid tfoot td.col-b { background: #f4ecdb; }
+
+/* name column: narrow, wraps underneath if long */
+.wname.sticky { position: sticky; left: 0; z-index: 2; background: #fff; text-align: left; width: 96px; min-width: 96px; box-shadow: 1px 0 0 var(--line); }
+.wgrid thead th.wname.sticky { z-index: 4; background: #f3ede3; }
+tfoot .wname.sticky { background: #faf7f2; }
+.wname-input { width: 100%; border: 1px solid transparent; background: transparent; font-weight: 700; font-size: 0.9rem; line-height: 1.18; padding: 0.25rem; border-radius: 6px; resize: none; overflow: hidden; font-family: inherit; color: var(--ink); word-break: break-word; }
 .wname-input:hover, .wname-input:focus { border-color: var(--line); background: #fff; }
 
-.wday { min-width: 106px; }
-.wcell { min-width: 106px; }
-.wcell.s-off { background: #faf9f7; }
-.wcell.s-leave { background: var(--leave-soft); }
-.wcell.s-flagged { background: var(--amber-soft); }
+.wgrid .wday { width: 124px; }
+.wcell { width: 124px; }
+.wcell.s-flagged { background: var(--amber-soft) !important; }
 
-/* quiet controls - look like text until you hover/focus them */
-.wc-type { width: 100%; text-align: center; border: 1px solid transparent; background: transparent; font-size: 0.82rem; font-weight: 600; color: var(--ink); padding: 0.15rem 0.2rem; border-radius: 6px; cursor: pointer; -webkit-appearance: none; appearance: none; }
-.wc-type:hover, .wc-type:focus { border-color: var(--line); background: #fff; }
-.wcell.s-off .wc-type { color: var(--muted); font-weight: 500; }
+/* type dropdown: quiet, secondary to the hours */
+.wc-type { width: 100%; text-align: center; border: 1px solid transparent; background: transparent; font-size: 0.66rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 0.05rem; border-radius: 5px; cursor: pointer; -webkit-appearance: none; appearance: none; }
+.wc-type:hover, .wc-type:focus { border-color: var(--line); background: #fff; color: var(--ink); }
 .wcell.s-leave .wc-type { color: var(--leave); }
+.wcell.s-flagged .wc-type { color: var(--amber); }
 
-.wc-body { margin-top: 3px; }
-.wc-times { display: flex; flex-direction: column; align-items: center; gap: 1px; }
-.wc-times.leave { flex-direction: row; justify-content: center; align-items: center; gap: 3px; }
-.wc-times input { border: 1px solid transparent; background: transparent; text-align: center; font-size: 0.84rem; padding: 0.12rem 0.15rem; border-radius: 6px; color: var(--ink); }
+/* times: side by side, compact, prominent */
+.wc-body { margin-top: 1px; }
+.wc-times { display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 1px; }
+.wc-times .dash { color: var(--muted); }
+.wc-times input { border: 1px solid transparent; background: transparent; text-align: center; font-size: 0.9rem; font-weight: 600; padding: 0.1rem 0.05rem; border-radius: 5px; color: var(--ink); font-family: inherit; }
 .wc-times input:hover, .wc-times input:focus { border-color: var(--line); background: #fff; }
-.wc-times input[type=time] { width: 90px; }
+.wc-times input[type=time] { width: 52px; }
+.wc-times input[type=time]::-webkit-calendar-picker-indicator { display: none; }
+.wc-times.leave { gap: 3px; }
 .wc-times .paid { width: 3rem; }
-.wc-times.leave span { font-size: 0.75rem; color: var(--leave); }
-.wc-h { font-size: 0.72rem; color: var(--muted); margin-top: 2px; }
+.wc-times.leave span { font-size: 0.8rem; color: var(--leave); }
 
-.wcell.empty { background: #faf9f7; }
-.cell-add { background: none; border: 1px dashed var(--line); border-radius: 6px; color: var(--muted); width: 26px; height: 26px; cursor: pointer; opacity: 0; transition: opacity 0.1s; }
+.wc-foot { display: flex; align-items: center; justify-content: center; gap: 0.35rem; margin-top: 2px; flex-wrap: wrap; }
+.wc-h { font-size: 0.84rem; font-weight: 700; color: var(--work); }
+.wcell.s-leave .wc-h { color: var(--leave); }
+
+.nobreak { border: 1px solid var(--line); background: #fff; color: var(--muted); font-size: 0.58rem; font-weight: 600; padding: 0.02rem 0.3rem; border-radius: 999px; cursor: pointer; white-space: nowrap; line-height: 1.4; }
+.nobreak:hover { border-color: var(--amber); color: var(--amber); }
+.nobreak.on { background: var(--amber); border-color: var(--amber); color: #fff; }
+
+.cell-add { background: none; border: 1px dashed var(--line); border-radius: 6px; color: var(--muted); width: 24px; height: 24px; cursor: pointer; opacity: 0; transition: opacity 0.1s; }
 .wcell.empty:hover .cell-add, .cell-add:focus { opacity: 1; }
 
-.wtot { min-width: 62px; font-weight: 700; color: var(--brand-ink); white-space: nowrap; background: #fff; box-shadow: -1px 0 0 var(--line); }
-thead .wtot { background: #faf7f2; }
-.wtot small { font-size: 0.68rem; font-weight: 600; margin-left: 1px; color: var(--muted); }
-
-.wgrid tfoot td { background: #faf7f2; border-top: 1px solid var(--line); padding: 0.45rem 0.4rem; font-size: 0.8rem; }
+.wtot { width: 60px; min-width: 60px; font-weight: 800; color: var(--brand-ink); white-space: nowrap; background: #fff; box-shadow: -1px 0 0 var(--line); }
+.wgrid thead th.wtot { background: #f3ede3; }
+tfoot .wtot { background: #faf7f2; }
+.wtot small { font-size: 0.66rem; font-weight: 600; margin-left: 1px; color: var(--muted); }
+.wgrid tfoot td { border-top: 2px solid var(--line); padding: 0.42rem 0.3rem; font-size: 0.82rem; }
 .daytot { color: var(--work); font-weight: 700; }
-.daytot-label { color: var(--muted); font-weight: 600; }
+.daytot-label { color: var(--muted); font-weight: 700; font-size: 0.82rem; }

@@ -1,4 +1,4 @@
-// shifts.js — parse a rota cell into hours, apply the unpaid-break rule.
+// shifts.js - parse a rota cell into hours, apply the unpaid-break rule.
 // Ported from a logic prototype validated against real rota PDFs.
 //
 // Rules implemented:
@@ -66,7 +66,8 @@ export function parseCell(raw) {
 }
 
 // Given a worked span in minutes, return paid minutes after the break rule.
-export function paidMinutesFromSpan(spanMinutes) {
+export function paidMinutesFromSpan(spanMinutes, noBreak = false) {
+  if (noBreak) return spanMinutes; // break waived (e.g. too busy to take it)
   const overThreshold = spanMinutes > BREAK_THRESHOLD_HOURS * 60;
   return overThreshold ? spanMinutes - BREAK_MINUTES : spanMinutes;
 }
