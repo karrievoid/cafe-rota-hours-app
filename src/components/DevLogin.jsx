@@ -7,7 +7,7 @@ import { api, setToken } from '../api.js';
 // To remove entirely: delete this file and its <DevLogin /> line in App.jsx.
 export default function DevLogin({ onLoggedIn }) {
   const [busy, setBusy] = useState(false);
-  if (!import.meta.env.DEV) return null;
+  if (!import.meta.env.DEV && import.meta.env.VITE_ALLOW_DEV_LOGIN !== 'true') return null;
 
   async function go() {
     setBusy(true);

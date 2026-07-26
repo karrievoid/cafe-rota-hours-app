@@ -125,3 +125,15 @@ export async function resetWithSecurity(email, answer, newPassword) {
   await query('UPDATE users SET password_hash=$1 WHERE id=$2', [ph, u.id]);
   return true;
 }
+
+// Change password while logged in (single manager account).
+export async function changePassword(currentPassword, newPassword) {
+  if (!newPassword || newPassword.length < 6) throw new Error('New password must be at least 6 characters');
+  const u = (await query('SELECT * FROM users ORDER BY id ASC LIMIT 1')).rows[0];
+  if (!u) throw new Error('No account found');
+  const ok = await bcrypt.compare(currentPassword || '', u.password_hash);
+  if (!ok) throw new Error('Current password is wrong');
+  const ph = await bcrypt.hash(newPassword, 10);
+  await query('UPDATE users SET password_hash=$1 WHERE id=$2', [ph, u.id]);
+  return true;
+}

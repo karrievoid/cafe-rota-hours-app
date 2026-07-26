@@ -20,6 +20,7 @@ function ManagerApp() {
   const [loading, setLoading] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [pendingNav, setPendingNav] = useState(null); // { run } when a guarded nav is queued
+  const [showSettings, setShowSettings] = useState(false);
   const rotaRef = useRef(null);
 
   const loadMonths = useCallback(async () => {
@@ -35,6 +36,18 @@ function ManagerApp() {
 
   useEffect(() => { if (authed) loadMonths(); }, [authed, loadMonths]);
   useEffect(() => { if (selectedId) loadDetail(selectedId); else setDetail(null); }, [selectedId, loadDetail]);
+
+  // Make the browser Back button return to the period list instead of leaving
+  // the app. Opening a period pushes a history entry; Back pops it and we just
+  // deselect (respecting unsaved-changes via guard).
+  useEffect(() => { if (selectedId != null) window.history.pushState(null, ''); }, [selectedId]);
+  useEffect(() => {
+    function onPop() {
+      if (selectedId != null) { window.history.pushState(null, ''); guard(() => setSelectedId(null)); }
+    }
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [selectedId, dirty]);
 
   // Run a navigation, but if there are unsaved edits, ask first.
   function guard(fn) {
@@ -55,7 +68,10 @@ function ManagerApp() {
     <div className="app">
       <header className="topbar">
         <button className="brand" onClick={() => guard(() => setSelectedId(null))}>Rota Hours</button>
-        <button className="ghost" onClick={() => guard(logout)}>Sign out</button>
+        <div className="topbar-actions" style={{ display: 'flex', gap: '0.5rem' }}>
+          <button className="ghost" onClick={() => setShowSettings(true)}>Settings</button>
+          <button className="ghost" onClick={() => guard(logout)}>Sign out</button>
+        </div>
       </header>
 
       {error && <div className="error banner" onClick={() => setError('')}>{error} (dismiss)</div>}
@@ -64,7 +80,6 @@ function ManagerApp() {
         <main className="dashboard">
           <Upload onCreated={(id) => { loadMonths(); setSelectedId(id); }} />
           <RequestsInbox />
-          <SecuritySettings />
           <div className="card months">
             <h2>Saved periods</h2>
             {months.length === 0 && <p className="muted">Nothing yet - upload your first rota above.</p>}
@@ -112,6 +127,18 @@ function ManagerApp() {
                 <button className="primary" onClick={modalSave}>Save &amp; leave</button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showSettings && (
+        <div className="modal-backdrop" onClick={() => setShowSettings(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: '460px', maxWidth: '100%', maxHeight: '85vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+              <h2 style={{ margin: 0 }}>Settings</h2>
+              <button className="ghost" onClick={() => setShowSettings(false)}>Close</button>
+            </div>
+            <SecuritySettings />
           </div>
         </div>
       )}

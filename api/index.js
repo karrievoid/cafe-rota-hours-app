@@ -4,7 +4,7 @@ import express from 'express';
 import cors from 'cors';
 
 import { query, ensureSchema } from './_lib/db.js';
-import { signToken, requireAuth, hasManager, registerManager, loginManager, checkStaffPin, getStaffPin, setStaffPin, setSecurity, getSecurity, getSecurityQuestion, resetWithSecurity } from './_lib/auth.js';
+import { signToken, requireAuth, hasManager, registerManager, loginManager, checkStaffPin, getStaffPin, setStaffPin, setSecurity, getSecurity, getSecurityQuestion, resetWithSecurity, changePassword } from './_lib/auth.js';
 import { buildAllRecords, monthNumFromName, monthBracket, MONTHS } from './_lib/buildShifts.js';
 import { paidMinutesFromSpan } from './_lib/shifts.js';
 
@@ -44,6 +44,10 @@ app.get('/api/settings/security', requireAuth, async (req, res, next) => {
 });
 app.put('/api/settings/security', requireAuth, async (req, res, next) => {
   try { await setSecurity(req.body?.question, req.body?.answer); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.put('/api/settings/password', requireAuth, async (req, res, next) => {
+  try { await changePassword(req.body?.currentPassword, req.body?.newPassword); res.json({ ok: true }); }
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 app.get('/api/auth/security-question', async (req, res, next) => {

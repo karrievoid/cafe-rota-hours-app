@@ -32,6 +32,7 @@ export const api = {
   resetPassword: (token, password) => request('/auth/reset', { method: 'POST', body: { token, password }, pub: true }),
   getSecurity: () => request('/settings/security'),
   setSecurity: (question, answer) => request('/settings/security', { method: 'PUT', body: { question, answer } }),
+  changePassword: (currentPassword, newPassword) => request('/settings/password', { method: 'PUT', body: { currentPassword, newPassword } }),
   securityQuestion: (email) => request(`/auth/security-question?email=${encodeURIComponent(email)}`, { pub: true }),
   securityReset: (email, answer, password) => request('/auth/security-reset', { method: 'POST', body: { email, answer, password }, pub: true }),
   getStaffPin: () => request('/settings/staff-pin'),
