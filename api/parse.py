@@ -1,12 +1,12 @@
 """
-api/parse.py — PDF -> structured rota data, using pdfplumber.
+api/parse.py - PDF -> structured rota data, using pdfplumber.
 
 Why Python for this step: pdfplumber gives clean word-with-coordinate output,
 which makes the positional table extraction (multi-word shifts, split shifts
 that bleed across a column) far simpler and more robust than doing it in Node.
 
 This endpoint ONLY reads the PDF layout. It does not interpret hours, apply the
-break rule, or trim months — that stays in the Node API (api/_lib) so all the
+break rule, or trim months - that stays in the Node API (api/_lib) so all the
 payroll logic lives in one place. It returns a `weeks` structure that the Node
 route feeds straight into buildShiftRecords().
 
@@ -194,7 +194,10 @@ def parse():
     weeks = []
     for f in files:
         try:
-            weeks.extend(parse_pdf_bytes(f.read()))
+            fw = parse_pdf_bytes(f.read())
+            for wk in fw:
+                wk["source"] = f.filename  # so the UI can offer a version chooser
+            weeks.extend(fw)
         except Exception as e:  # noqa: BLE001
             return jsonify({"error": f"Could not read {f.filename}: {e}"}), 422
 

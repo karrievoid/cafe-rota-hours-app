@@ -4,7 +4,7 @@ import express from 'express';
 import cors from 'cors';
 
 import { query, ensureSchema } from './_lib/db.js';
-import { signToken, checkPassword, requireAuth } from './_lib/auth.js';
+import { signToken, requireAuth, hasManager, registerManager, loginManager, checkStaffPin, getStaffPin, setStaffPin } from './_lib/auth.js';
 import { buildAllRecords, monthNumFromName, monthBracket, MONTHS } from './_lib/buildShifts.js';
 import { paidMinutesFromSpan } from './_lib/shifts.js';
 
@@ -20,10 +20,57 @@ app.use(async (req, res, next) => {
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 // ---- Auth ----
-app.post('/api/login', (req, res) => {
-  if (!checkPassword(req.body?.password)) return res.status(401).json({ error: 'Wrong password' });
+app.get('/api/auth/status', async (req, res, next) => {
+  try { res.json({ hasAccount: await hasManager() }); } catch (e) { next(e); }
+});
+app.post('/api/auth/register', async (req, res, next) => {
+  try { await registerManager(req.body?.email, req.body?.password); res.status(201).json({ token: signToken() }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/auth/login', async (req, res, next) => {
+  try { await loginManager(req.body?.email, req.body?.password); res.json({ token: signToken() }); }
+  catch (e) { res.status(401).json({ error: e.message }); }
+});
+
+// Dev-only quick login (set ALLOW_DEV_LOGIN=true locally). Never enable in prod.
+app.post('/api/auth/dev-login', (req, res) => {
+  if (process.env.ALLOW_DEV_LOGIN !== 'true') return res.status(403).json({ error: 'Disabled' });
   res.json({ token: signToken() });
 });
+
+// Manager: view / change the staff PIN used by the request page.
+app.get('/api/settings/staff-pin', requireAuth, async (req, res, next) => {
+  try { res.json({ pin: await getStaffPin() }); } catch (e) { next(e); }
+});
+app.put('/api/settings/staff-pin', requireAuth, async (req, res, next) => {
+  try {
+    const pin = String(req.body?.pin || '').trim();
+    if (pin.length < 3) return res.status(400).json({ error: 'PIN must be at least 3 characters' });
+    await setStaffPin(pin);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// Manager: people in the table (for the accept picker; disambiguates two Loises).
+app.get('/api/people', requireAuth, async (req, res, next) => {
+  try {
+    const r = await query(`
+      SELECT person_key,
+             COALESCE(person_label, person_name) AS name,
+             mode() WITHIN GROUP (ORDER BY (start_min || '-' || end_min))
+               FILTER (WHERE status='work' AND start_min IS NOT NULL) AS common
+        FROM shifts GROUP BY person_key, COALESCE(person_label, person_name)
+        ORDER BY name`);
+    res.json(r.rows.map((x) => ({ personKey: x.person_key, name: x.name, hint: hintFromCommon(x.common) })));
+  } catch (e) { next(e); }
+});
+function hintFromCommon(c) {
+  if (!c) return '';
+  const [a, b] = String(c).split('-');
+  const f = (m) => { const n = parseInt(m, 10); return Number.isNaN(n) ? '' : `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`; };
+  const s2 = f(a); const e2 = f(b);
+  return (s2 && e2) ? `${s2}-${e2}` : '';
+}
 
 // ---- Helpers ----
 function dstr(v) { return v instanceof Date ? v.toISOString().slice(0, 10) : v; }
@@ -279,6 +326,104 @@ app.post('/api/shifts', requireAuth, async (req, res, next) => {
 app.delete('/api/shifts/:id', requireAuth, async (req, res, next) => {
   try {
     await query(`DELETE FROM shifts WHERE id=$1`, [parseInt(req.params.id, 10)]);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// ---- Change requests (public PIN-gated submit; manager review) ----
+function shapeRequest(r) {
+  return {
+    id: r.id, createdAt: r.created_at, requester: r.requester_name, forName: r.employee_name,
+    workDate: dstr(r.work_date), type: r.req_status, startMin: r.start_min, endMin: r.end_min,
+    leaveMinutes: r.leave_minutes, reason: r.reason, status: r.status,
+    decidedAt: r.decided_at, appliedShiftId: r.applied_shift_id,
+  };
+}
+
+// Public: list staff names for the request page (PIN-gated).
+app.get('/api/public/roster', async (req, res, next) => {
+  try {
+    if (!(await checkStaffPin(req.query.pin))) return res.status(401).json({ error: 'Wrong PIN' });
+    const r = await query('SELECT DISTINCT COALESCE(person_label, person_name) AS name FROM shifts ORDER BY name');
+    res.json({ names: r.rows.map((x) => x.name) });
+  } catch (e) { next(e); }
+});
+
+// Public: submit one or more change requests (PIN-gated).
+app.post('/api/requests', async (req, res, next) => {
+  try {
+    const { pin, requesterName, changes } = req.body || {};
+    if (!(await checkStaffPin(pin))) return res.status(401).json({ error: 'Wrong PIN' });
+    if (!requesterName || !String(requesterName).trim()) return res.status(400).json({ error: 'Enter your name' });
+    if (!Array.isArray(changes) || changes.length === 0) return res.status(400).json({ error: 'Add at least one change' });
+    let saved = 0;
+    for (const c of changes) {
+      const forName = String(c.forName || '').trim();
+      if (!forName || !c.workDate || !c.type || !ISO_RE.test(c.workDate)) continue;
+      const leaveMinutes = c.type === 'leave' ? Math.max(0, Math.round((parseFloat(c.leaveHours) || 0) * 60)) : null;
+      await query(
+        `INSERT INTO change_requests (requester_name, employee_name, work_date, req_status, start_min, end_min, leave_minutes, reason)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [String(requesterName).trim(), forName, c.workDate, c.type,
+         c.type === 'work' ? (c.startMin ?? null) : null, c.type === 'work' ? (c.endMin ?? null) : null,
+         leaveMinutes, (c.reason || '').trim() || null]);
+      saved += 1;
+    }
+    if (!saved) return res.status(400).json({ error: 'No valid changes to submit' });
+    res.status(201).json({ ok: true, saved });
+  } catch (e) { next(e); }
+});
+
+// Manager: list requests by status.
+app.get('/api/requests', requireAuth, async (req, res, next) => {
+  try {
+    const status = req.query.status || 'pending';
+    const r = await query('SELECT * FROM change_requests WHERE status=$1 ORDER BY created_at DESC', [status]);
+    res.json(r.rows.map(shapeRequest));
+  } catch (e) { next(e); }
+});
+
+// Manager: accept a request -> apply it to the matching shift.
+app.post('/api/requests/:id/accept', requireAuth, async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const rr = (await query('SELECT * FROM change_requests WHERE id=$1', [id])).rows[0];
+    if (!rr) return res.status(404).json({ error: 'Request not found' });
+    if (rr.status !== 'pending') return res.status(400).json({ error: 'Already decided' });
+    const personKey = req.body?.personKey;
+    if (!personKey) return res.status(400).json({ error: 'Choose which person to apply this to' });
+    const sh = (await query(
+      'SELECT * FROM shifts WHERE work_date=$1 AND person_key=$2 LIMIT 1',
+      [dstr(rr.work_date), personKey])).rows[0];
+    if (!sh) return res.status(409).json({ error: 'That person has no shift on that date. Adjust it by hand, or reject.' });
+
+    let startMin = sh.start_min; let endMin = sh.end_min; let paid = sh.paid_minutes;
+    if (rr.req_status === 'work') {
+      startMin = rr.start_min; endMin = rr.end_min;
+      paid = (startMin != null && endMin != null && endMin > startMin) ? paidMinutesFromSpan(endMin - startMin) : 0;
+    } else if (rr.req_status === 'off') { startMin = null; endMin = null; paid = 0; }
+    else if (rr.req_status === 'leave') { startMin = null; endMin = null; paid = Math.max(0, rr.leave_minutes || 0); }
+
+    await query('UPDATE shifts SET status=$1, start_min=$2, end_min=$3, paid_minutes=$4, no_break=false, overridden=true WHERE id=$5',
+      [rr.req_status, startMin, endMin, paid, sh.id]);
+    await query("UPDATE change_requests SET status='accepted', decided_at=now(), applied_shift_id=$1 WHERE id=$2", [sh.id, id]);
+    res.json({ ok: true, shiftId: sh.id });
+  } catch (e) { next(e); }
+});
+
+// Manager: reject a request (kept in the rejected list).
+app.post('/api/requests/:id/reject', requireAuth, async (req, res, next) => {
+  try {
+    await query("UPDATE change_requests SET status='rejected', decided_at=now() WHERE id=$1 AND status='pending'",
+      [parseInt(req.params.id, 10)]);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// Manager: permanently delete a decided request from its list.
+app.delete('/api/requests/:id', requireAuth, async (req, res, next) => {
+  try {
+    await query('DELETE FROM change_requests WHERE id=$1', [parseInt(req.params.id, 10)]);
     res.json({ ok: true });
   } catch (e) { next(e); }
 });

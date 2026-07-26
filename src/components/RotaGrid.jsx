@@ -204,6 +204,7 @@ function mondayOf(iso) {
 
 /* ---------- Weekly grid ---------- */
 function WeekTable({ week, people, cell, onPatch, onRename, onAddAt }) {
+  const colClass = (i) => (i % 2 === 0 ? 'col-a' : 'col-b');
   return (
     <div className="card week">
       <div className="grid-scroll">
@@ -211,7 +212,7 @@ function WeekTable({ week, people, cell, onPatch, onRename, onAddAt }) {
           <thead>
             <tr>
               <th className="wname sticky">Staff</th>
-              {week.dates.map((d) => <th key={d} className="wday">{fmtDate(d)}</th>)}
+              {week.dates.map((d, i) => <th key={d} className={`wday ${colClass(i)}`}>{fmtDate(d)}</th>)}
               <th className="wtot">Week</th>
             </tr>
           </thead>
@@ -219,15 +220,15 @@ function WeekTable({ week, people, cell, onPatch, onRename, onAddAt }) {
             {people.map((p) => {
               let wkMin = 0;
               const cells = week.dates.map((d) => {
-                const s = cell.get(`${p.personKey}|${d}`);
-                if (s) wkMin += s.paidMinutes || 0;
-                return { d, s };
+                const sh = cell.get(`${p.personKey}|${d}`);
+                if (sh) wkMin += sh.paidMinutes || 0;
+                return { d, sh };
               });
               return (
                 <tr key={p.personKey}>
                   <td className="wname sticky"><NameCell person={p} onRename={onRename} /></td>
-                  {cells.map(({ d, s }) => (
-                    <WeekCell key={d} shift={s} date={d} person={p} onPatch={onPatch} onAddAt={onAddAt} />
+                  {cells.map(({ d, sh }, i) => (
+                    <WeekCell key={d} shift={sh} date={d} person={p} colClass={colClass(i)} onPatch={onPatch} onAddAt={onAddAt} />
                   ))}
                   <td className="wtot num">{minToHours(wkMin).toFixed(2)}<small>h</small></td>
                 </tr>
@@ -236,11 +237,11 @@ function WeekTable({ week, people, cell, onPatch, onRename, onAddAt }) {
           </tbody>
           <tfoot>
             <tr>
-              <td className="wname sticky daytot-label">Daily hours</td>
-              {week.dates.map((d) => {
+              <td className="wname sticky daytot-label">Day summary</td>
+              {week.dates.map((d, i) => {
                 let m = 0;
-                for (const p of people) { const s = cell.get(`${p.personKey}|${d}`); if (s) m += s.paidMinutes || 0; }
-                return <td key={d} className="num daytot">{minToHours(m).toFixed(2)}</td>;
+                for (const p of people) { const sh = cell.get(`${p.personKey}|${d}`); if (sh) m += sh.paidMinutes || 0; }
+                return <td key={d} className={`num daytot ${colClass(i)}`}>{minToHours(m).toFixed(2)}</td>;
               })}
               <td className="num" />
             </tr>
@@ -253,19 +254,23 @@ function WeekTable({ week, people, cell, onPatch, onRename, onAddAt }) {
 
 function NameCell({ person, onRename }) {
   const [name, setName] = useState(person.name);
+  const ref = useRef(null);
   useEffect(() => { setName(person.name); }, [person.name]);
+  const grow = (el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } };
+  useEffect(() => { grow(ref.current); }, [name]);
   return (
-    <input className="wname-input" value={name}
-      onChange={(e) => setName(e.target.value)}
+    <textarea ref={ref} className="wname-input" rows={1} value={name}
+      onChange={(e) => setName(e.target.value.replace(/\n/g, ''))}
+      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } }}
       onBlur={() => onRename(person.personKey, name)}
       title="Rename (e.g. Lois (Bake)) - applies to all their shifts" />
   );
 }
 
-function WeekCell({ shift, date, person, onPatch, onAddAt }) {
+function WeekCell({ shift, date, person, colClass, onPatch, onAddAt }) {
   if (!shift) {
     return (
-      <td className="wcell empty">
+      <td className={`wcell empty ${colClass}`}>
         <button className="cell-add" title="Add a shift" onClick={() => onAddAt(person, date)}>+</button>
       </td>
     );
@@ -275,7 +280,7 @@ function WeekCell({ shift, date, person, onPatch, onAddAt }) {
   const showRaw = shift.rawText && shift.rawText !== 'manual';
 
   return (
-    <td className={`wcell s-${flagged ? 'flagged' : status}`} title={showRaw ? `From rota: ${shift.rawText}` : ''}>
+    <td className={`wcell ${colClass} s-${flagged ? 'flagged' : status}`} title={showRaw ? `From rota: ${shift.rawText}` : ''}>
       <select className="wc-type" value={status} onChange={(e) => onPatch(shift.id, { status: e.target.value })}>
         <option value="work">Work</option>
         <option value="leave">Leave</option>
@@ -320,39 +325,49 @@ function personMinutes(rows) { return rows.reduce((s, r) => s + (r.paidMinutes |
 function PersonCard({ group, onRename, onLeaveBulk, onAdd, onPatch, onDelete }) {
   const [name, setName] = useState(group.personLabel || group.personName);
   useEffect(() => { setName(group.personLabel || group.personName); }, [group.personLabel, group.personName]);
+  const [open, setOpen] = useState(false);
   const leaveRows = group.rows.filter((r) => r.status === 'leave');
   const [leaveHrs, setLeaveHrs] = useState(leaveRows.length ? minToHours(leaveRows[0].paidMinutes).toFixed(2) : '');
   const total = minToHours(personMinutes(group.rows)).toFixed(2);
+  const workDays = group.rows.filter((r) => r.status === 'work').length;
 
   return (
-    <div className="card person">
+    <div className={`card person ${open ? 'open' : 'closed'}`}>
       <div className="person-head">
+        <button type="button" className="person-toggle" onClick={() => setOpen((o) => !o)}
+          title={open ? 'Collapse' : 'Expand'} aria-label={open ? 'Collapse' : 'Expand'}>
+          <span className="caret" />
+        </button>
         <input className="person-name" value={name}
           onChange={(e) => setName(e.target.value)} onBlur={() => onRename(group.personKey, name)}
           title="Rename (e.g. Lois (Bake)) - applies to all their shifts" />
+        {!open && <span className="person-sub">{workDays} day{workDays === 1 ? '' : 's'}{leaveRows.length ? ` + ${leaveRows.length} leave` : ''}</span>}
         <span className="person-total">{total}<small>h</small></span>
       </div>
 
-      {leaveRows.length > 0 && (
-        <div className="leave-bar">
-          <span>{leaveRows.length} leave day{leaveRows.length === 1 ? '' : 's'}</span>
-          <span className="leave-set">
-            <input type="number" step="0.25" min="0" value={leaveHrs}
-              onChange={(e) => setLeaveHrs(e.target.value)} onBlur={() => onLeaveBulk(group.personKey, leaveHrs)}
-              title="Hours to pay for each leave day" /><em>h/day</em>
-          </span>
-        </div>
+      {open && (
+        <>
+          {leaveRows.length > 0 && (
+            <div className="leave-bar">
+              <span>{leaveRows.length} leave day{leaveRows.length === 1 ? '' : 's'}</span>
+              <span className="leave-set">
+                <input type="number" step="0.25" min="0" value={leaveHrs}
+                  onChange={(e) => setLeaveHrs(e.target.value)} onBlur={() => onLeaveBulk(group.personKey, leaveHrs)}
+                  title="Hours to pay for each leave day" /><em>h/day</em>
+              </span>
+            </div>
+          )}
+
+          <div className="shift-rows">
+            {group.rows.map((r) => <ShiftRow key={r.id} row={r} onPatch={onPatch} onDelete={onDelete} />)}
+          </div>
+
+          <button className="add-shift" onClick={() => onAdd(group)}>+ Add shift</button>
+        </>
       )}
-
-      <div className="shift-rows">
-        {group.rows.map((r) => <ShiftRow key={r.id} row={r} onPatch={onPatch} onDelete={onDelete} />)}
-      </div>
-
-      <button className="add-shift" onClick={() => onAdd(group)}>+ Add shift</button>
     </div>
   );
 }
-
 function ShiftRow({ row, onPatch, onDelete }) {
   const status = row.status === 'unparsed' ? 'work' : row.status;
   const flagged = row.status === 'unparsed';

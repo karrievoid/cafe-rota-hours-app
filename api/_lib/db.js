@@ -68,6 +68,35 @@ CREATE TABLE IF NOT EXISTS shifts (
 
 CREATE INDEX IF NOT EXISTS idx_shifts_month ON shifts(month_id);
 ALTER TABLE shifts ADD COLUMN IF NOT EXISTS no_break BOOLEAN NOT NULL DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS users (
+  id            SERIAL PRIMARY KEY,
+  email         TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS change_requests (
+  id            SERIAL PRIMARY KEY,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  employee_name TEXT NOT NULL,
+  work_date     DATE NOT NULL,
+  req_status    TEXT NOT NULL,           -- desired: 'work' | 'off' | 'leave'
+  start_min     INT,
+  end_min       INT,
+  leave_minutes INT,
+  reason        TEXT,
+  status        TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'accepted' | 'rejected'
+  decided_at    TIMESTAMPTZ,
+  applied_shift_id INT
+);
+CREATE INDEX IF NOT EXISTS idx_requests_status ON change_requests(status);
+ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS requester_name TEXT;
+
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
 `;
 
 let initPromise;

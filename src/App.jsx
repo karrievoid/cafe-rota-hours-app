@@ -6,8 +6,11 @@ import Upload from './components/Upload.jsx';
 import RotaGrid from './components/RotaGrid.jsx';
 import PeriodTools from './components/PeriodTools.jsx';
 import Toaster from './components/Toaster.jsx';
+import RequestsInbox from './components/RequestsInbox.jsx';
+import RequestForm from './components/RequestForm.jsx';
+import DevLogin from './components/DevLogin.jsx';
 
-export default function App() {
+function ManagerApp() {
   const [authed, setAuthed] = useState(!!getToken());
   const [months, setMonths] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -45,7 +48,7 @@ export default function App() {
 
   function logout() { clearToken(); setAuthed(false); setSelectedId(null); setDetail(null); }
 
-  if (!authed) return (<><Login onLoggedIn={() => setAuthed(true)} /><Toaster /></>);
+  if (!authed) return (<><Login onLoggedIn={() => setAuthed(true)} /><DevLogin onLoggedIn={() => setAuthed(true)} /><Toaster /></>);
 
   return (
     <div className="app">
@@ -59,6 +62,7 @@ export default function App() {
       {!selectedId ? (
         <main className="dashboard">
           <Upload onCreated={(id) => { loadMonths(); setSelectedId(id); }} />
+          <RequestsInbox />
           <div className="card months">
             <h2>Saved periods</h2>
             {months.length === 0 && <p className="muted">Nothing yet - upload your first rota above.</p>}
@@ -113,4 +117,12 @@ export default function App() {
       <Toaster />
     </div>
   );
+}
+
+// Public change-request page lives at the same URL with #request in the address bar.
+export default function App() {
+  const isRequestPage = typeof window !== 'undefined'
+    && window.location.hash.replace('#', '').toLowerCase() === 'request';
+  if (isRequestPage) return (<><RequestForm /><Toaster /></>);
+  return <ManagerApp />;
 }
