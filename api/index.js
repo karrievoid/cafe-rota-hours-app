@@ -4,7 +4,7 @@ import express from 'express';
 import cors from 'cors';
 
 import { query, ensureSchema } from './_lib/db.js';
-import { signToken, requireAuth, hasManager, registerManager, loginManager, checkStaffPin, getStaffPin, setStaffPin } from './_lib/auth.js';
+import { signToken, requireAuth, hasManager, registerManager, loginManager, checkStaffPin, getStaffPin, setStaffPin, setSecurity, getSecurity, getSecurityQuestion, resetWithSecurity } from './_lib/auth.js';
 import { buildAllRecords, monthNumFromName, monthBracket, MONTHS } from './_lib/buildShifts.js';
 import { paidMinutesFromSpan } from './_lib/shifts.js';
 
@@ -36,6 +36,22 @@ app.post('/api/auth/login', async (req, res, next) => {
 app.post('/api/auth/dev-login', (req, res) => {
   if (process.env.ALLOW_DEV_LOGIN !== 'true') return res.status(403).json({ error: 'Disabled' });
   res.json({ token: signToken() });
+});
+
+// Recovery question (email-free reset).
+app.get('/api/settings/security', requireAuth, async (req, res, next) => {
+  try { res.json(await getSecurity()); } catch (e) { next(e); }
+});
+app.put('/api/settings/security', requireAuth, async (req, res, next) => {
+  try { await setSecurity(req.body?.question, req.body?.answer); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.get('/api/auth/security-question', async (req, res, next) => {
+  try { res.json({ question: await getSecurityQuestion(req.query.email) }); } catch (e) { next(e); }
+});
+app.post('/api/auth/security-reset', async (req, res, next) => {
+  try { await resetWithSecurity(req.body?.email, req.body?.answer, req.body?.password); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // Manager: view / change the staff PIN used by the request page.
@@ -74,6 +90,15 @@ function hintFromCommon(c) {
 
 // ---- Helpers ----
 function dstr(v) { return v instanceof Date ? v.toISOString().slice(0, 10) : v; }
+
+function hhmm(m) { if (m == null) return ''; return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`; }
+function describeShift(status, startMin, endMin, paidMinutes) {
+  const h = Math.round((paidMinutes || 0) / 60 * 100) / 100;
+  if (status === 'work') return `${hhmm(startMin)}-${hhmm(endMin)} (${h}h)`;
+  if (status === 'leave') return `Leave ${h}h`;
+  if (status === 'unparsed') return 'needs check';
+  return 'Off';
+}
 
 function monthObj(r) {
   return {
@@ -243,6 +268,67 @@ app.post('/api/months/:id/rotas', requireAuth, async (req, res, next) => {
     const records = buildAllRecords(weeks, dstr(row.start_date), dstr(row.end_date));
     const added = await insertRecords(id, records);
     res.json({ added });
+  } catch (e) { next(e); }
+});
+
+// Revert to an uploaded PDF: diff the freshly parsed rota against the current
+// shifts. apply=false returns how many would change (preview); apply=true does it.
+// Manual edits are overwritten back to the PDF values; person display names are kept.
+app.post('/api/months/:id/revert', requireAuth, async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const weeks = req.body.weeks;
+    const apply = !!req.body.apply;
+    if (!Array.isArray(weeks) || weeks.length === 0) return res.status(400).json({ error: 'No parsed rota data received' });
+    const m = (await query('SELECT * FROM rota_months WHERE id=$1', [id])).rows[0];
+    if (!m) return res.status(404).json({ error: 'Period not found' });
+    const start = dstr(m.start_date); const end = dstr(m.end_date);
+
+    const records = buildAllRecords(weeks, start, end).filter((r) => r.workDate >= start && r.workDate <= end);
+    const current = (await query('SELECT * FROM shifts WHERE month_id=$1 AND work_date BETWEEN $2 AND $3', [id, start, end])).rows;
+    const curMap = new Map(current.map((c) => [`${c.person_key}|${dstr(c.work_date)}`, c]));
+    const parsedKeys = new Set(records.map((r) => `${r.personKey}|${r.workDate}`));
+    const pdfDates = new Set(records.map((r) => r.workDate));
+
+    const changes = [];
+    const toRemove = [];
+    const nameByKey = {};
+    for (const c of current) { if (!nameByKey[c.person_key]) nameByKey[c.person_key] = c.person_label || c.person_name; }
+    for (const r of records) {
+      const c = curMap.get(`${r.personKey}|${r.workDate}`);
+      const to = describeShift(r.status, r.startMin, r.endMin, r.paidMinutes);
+      if (!c) { changes.push({ name: r.personLabel || r.personName, date: r.workDate, from: '(no shift)', to }); continue; }
+      const differs = c.status !== r.status || (c.start_min ?? null) !== (r.startMin ?? null)
+        || (c.end_min ?? null) !== (r.endMin ?? null) || (c.paid_minutes || 0) !== (r.paidMinutes || 0);
+      if (differs) changes.push({ name: nameByKey[c.person_key] || r.personName, date: r.workDate, from: describeShift(c.status, c.start_min, c.end_min, c.paid_minutes), to });
+    }
+    for (const c of current) {
+      const key = `${c.person_key}|${dstr(c.work_date)}`;
+      if (pdfDates.has(dstr(c.work_date)) && !parsedKeys.has(key)) {
+        toRemove.push(c.id);
+        changes.push({ name: c.person_label || c.person_name, date: dstr(c.work_date), from: describeShift(c.status, c.start_min, c.end_min, c.paid_minutes), to: 'removed (not in PDF)' });
+      }
+    }
+    changes.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
+    const willChange = changes.length;
+
+    if (!apply) return res.json({ willChange, totalInPdf: records.length, start, end, changes });
+
+    const labelByPerson = {};
+    for (const c of current) { if (c.person_label && !labelByPerson[c.person_key]) labelByPerson[c.person_key] = c.person_label; }
+    for (const rid of toRemove) await query('DELETE FROM shifts WHERE id=$1', [rid]);
+    for (const r of records) {
+      const c = curMap.get(`${r.personKey}|${r.workDate}`);
+      if (c) {
+        await query('UPDATE shifts SET status=$1, start_min=$2, end_min=$3, paid_minutes=$4, no_break=false, overridden=false, raw_text=$5 WHERE id=$6',
+          [r.status, r.startMin, r.endMin, r.paidMinutes, r.rawText, c.id]);
+      } else {
+        await query(`INSERT INTO shifts (month_id, person_key, person_name, person_label, work_date, raw_text, status, start_min, end_min, paid_minutes)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [id, r.personKey, r.personName, labelByPerson[r.personKey] || null, r.workDate, r.rawText, r.status, r.startMin, r.endMin, r.paidMinutes]);
+      }
+    }
+    res.json({ changed: willChange, applied: true });
   } catch (e) { next(e); }
 });
 

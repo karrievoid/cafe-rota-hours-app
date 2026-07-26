@@ -2,6 +2,7 @@
 // (email + password, stored hashed); after that they log in. Sessions are JWTs.
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { query } from './db.js';
 
 function secret() { return process.env.JWT_SECRET || 'dev-insecure-secret-change-me'; }
@@ -64,4 +65,63 @@ export async function checkStaffPin(pin) {
   const expected = await getStaffPin();
   if (!expected) return false;
   return typeof pin === 'string' && pin.length > 0 && pin === expected;
+}
+
+// ---- Password reset ----
+export async function createResetToken(email) {
+  const em = String(email || '').toLowerCase().trim();
+  const u = (await query('SELECT * FROM users WHERE email=$1', [em])).rows[0];
+  if (!u) return null; // caller must not reveal whether the email exists
+  const token = crypto.randomBytes(32).toString('hex');
+  const hash = crypto.createHash('sha256').update(token).digest('hex');
+  const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+  await query('INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1,$2,$3)', [u.id, hash, expires]);
+  return { token, user: u };
+}
+
+export async function resetPassword(token, newPassword) {
+  if (!token) throw new Error('Invalid reset link');
+  if (!newPassword || newPassword.length < 6) throw new Error('Password must be at least 6 characters');
+  const hash = crypto.createHash('sha256').update(String(token)).digest('hex');
+  const r = (await query(
+    'SELECT * FROM password_resets WHERE token_hash=$1 AND used=false AND expires_at>now() ORDER BY id DESC LIMIT 1',
+    [hash])).rows[0];
+  if (!r) throw new Error('This reset link is invalid or has expired');
+  const ph = await bcrypt.hash(newPassword, 10);
+  await query('UPDATE users SET password_hash=$1 WHERE id=$2', [ph, r.user_id]);
+  await query('UPDATE password_resets SET used=true WHERE id=$1', [r.id]);
+  return true;
+}
+
+// ---- Recovery question (simple, email-free password reset) ----
+function normAnswer(a) { return String(a || '').trim().toLowerCase().replace(/\s+/g, ' '); }
+
+export async function setSecurity(question, answer) {
+  const q = String(question || '').trim();
+  if (!q) throw new Error('Enter a recovery question');
+  if (normAnswer(answer).length < 2) throw new Error('Enter a recovery answer');
+  const hash = await bcrypt.hash(normAnswer(answer), 10);
+  await query('UPDATE users SET security_question=$1, security_answer_hash=$2 WHERE id=(SELECT id FROM users ORDER BY id ASC LIMIT 1)', [q, hash]);
+}
+
+export async function getSecurity() {
+  const u = (await query('SELECT security_question, security_answer_hash FROM users ORDER BY id ASC LIMIT 1')).rows[0];
+  return { question: (u && u.security_question) || '', hasAnswer: !!(u && u.security_answer_hash) };
+}
+
+export async function getSecurityQuestion(email) {
+  const u = (await query('SELECT security_question, security_answer_hash FROM users WHERE email=$1', [String(email || '').toLowerCase().trim()])).rows[0];
+  if (!u || !u.security_answer_hash) return null;
+  return u.security_question || 'Security question';
+}
+
+export async function resetWithSecurity(email, answer, newPassword) {
+  if (!newPassword || newPassword.length < 6) throw new Error('Password must be at least 6 characters');
+  const u = (await query('SELECT * FROM users WHERE email=$1', [String(email || '').toLowerCase().trim()])).rows[0];
+  if (!u || !u.security_answer_hash) throw new Error('No recovery question is set for this account');
+  const ok = await bcrypt.compare(normAnswer(answer), u.security_answer_hash);
+  if (!ok) throw new Error('That answer does not match');
+  const ph = await bcrypt.hash(newPassword, 10);
+  await query('UPDATE users SET password_hash=$1 WHERE id=$2', [ph, u.id]);
+  return true;
 }

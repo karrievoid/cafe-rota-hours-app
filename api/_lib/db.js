@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS security_question TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS security_answer_hash TEXT;
 
 CREATE TABLE IF NOT EXISTS change_requests (
   id            SERIAL PRIMARY KEY,
@@ -96,6 +98,15 @@ ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS requester_name TEXT;
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS password_resets (
+  id          SERIAL PRIMARY KEY,
+  user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash  TEXT NOT NULL,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  used        BOOLEAN NOT NULL DEFAULT false,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 `;
 
