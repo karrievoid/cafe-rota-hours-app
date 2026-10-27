@@ -3,72 +3,59 @@ import { api } from '../api.js';
 import { toast } from '../toast.js';
 import { fmtDateFull, fmtDate } from '../util.js';
 
-// Sits at the top of a period: edit the bracket (which days count) and add more
-// rota PDFs to a period you already created.
+// Sits at the top of a period: edit the bracket (which days count), pull in any
+// newly-uploaded rotas, or reset the view back to the original stored rotas.
+// None of these touch the uploaded-rota library - they only rebuild this view.
 export default function PeriodTools({ month, outsideBracket, onChanged }) {
   const [open, setOpen] = useState(false);
   const [start, setStart] = useState(month.startDate);
   const [end, setEnd] = useState(month.endDate);
   const [label, setLabel] = useState(month.label);
   const [busy, setBusy] = useState(false);
-  const [addFiles, setAddFiles] = useState([]);
-  const [revertFiles, setRevertFiles] = useState([]);
-  const [revertWeeks, setRevertWeeks] = useState(null);
-  const [revertPreview, setRevertPreview] = useState(null); // { willChange, totalInPdf }
+  const [step, setStep] = useState('');
+  const [revertPreview, setRevertPreview] = useState(null); // { willChange, totalInPdf, changes }
 
   async function saveBracket() {
     if (start > end) { toast('Start must be on or before end', 'error'); return; }
-    setBusy(true);
+    setBusy(true); setStep('Updating period...');
     try {
       await api.updateMonth(month.id, { startDate: start, endDate: end, label });
       await onChanged();
       toast('Period updated');
       setOpen(false);
     } catch (e) { toast(e.message, 'error'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setStep(''); }
   }
 
-  async function addRotas(e) {
-    e.preventDefault();
-    if (!addFiles.length) return;
-    setBusy(true);
+  async function pullRotas() {
+    setBusy(true); setStep('Pulling in stored rotas...');
     try {
-      const fd = new FormData();
-      for (const f of addFiles) fd.append('files', f);
-      const { weeks } = await api.parsePdfs(fd);
-      const { added } = await api.addRotas(month.id, weeks);
-      setAddFiles([]);
+      const { added } = await api.pullStoredRotas(month.id);
       await onChanged();
       toast(added > 0 ? `Added ${added} shift day${added === 1 ? '' : 's'}` : 'Nothing new to add');
     } catch (err) { toast(err.message, 'error'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setStep(''); }
   }
 
-  async function checkRevert(e) {
-    e.preventDefault();
-    if (!revertFiles.length) return;
-    setBusy(true);
+  async function checkRevert() {
+    setBusy(true); setStep('Checking against stored rotas...');
     try {
-      const fd = new FormData();
-      for (const f of revertFiles) fd.append('files', f);
-      const { weeks } = await api.parsePdfs(fd);
-      const preview = await api.revert(month.id, weeks, false);
-      setRevertWeeks(weeks);
+      const preview = await api.revert(month.id, false);
       setRevertPreview(preview);
     } catch (err) { toast(err.message, 'error'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setStep(''); }
   }
   async function applyRevert() {
-    setBusy(true);
+    setBusy(true); setStep('Resetting...');
     try {
-      const { changed } = await api.revert(month.id, revertWeeks, true);
-      setRevertFiles([]); setRevertWeeks(null); setRevertPreview(null);
+      const { changed } = await api.revert(month.id, true);
+      setRevertPreview(null);
       await onChanged();
-      toast(`Reverted ${changed} shift${changed === 1 ? '' : 's'} to the PDF`);
+      toast(`Reset ${changed} shift${changed === 1 ? '' : 's'} to the original rota`);
     } catch (err) { toast(err.message, 'error'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setStep(''); }
   }
-  function cancelRevert() { setRevertWeeks(null); setRevertPreview(null); }
+  function cancelRevert() { setRevertPreview(null); }
 
   return (
     <div className="card period-tools">
@@ -79,8 +66,10 @@ export default function PeriodTools({ month, outsideBracket, onChanged }) {
             <span className="muted small"> &middot; {outsideBracket} stored day{outsideBracket === 1 ? '' : 's'} outside the bracket</span>
           )}
         </div>
-        <button className="ghost" onClick={() => setOpen((v) => !v)}>{open ? 'Close' : 'Edit period / add rotas'}</button>
+        <button className="ghost" onClick={() => setOpen((v) => !v)}>{open ? 'Close' : 'Edit period'}</button>
       </div>
+
+      {busy && <div className="processing"><span className="spinner" /> {step || 'Working...'}</div>}
 
       {open && (
         <div className="period-editor">
@@ -100,25 +89,22 @@ export default function PeriodTools({ month, outsideBracket, onChanged }) {
             <button className="primary" onClick={saveBracket} disabled={busy}>Save period</button>
           </div>
 
-          <form className="pe-block" onSubmit={addRotas}>
-            <h4>Add more rotas</h4>
-            <p className="muted small">Upload additional weekly PDFs for this same period.</p>
-            <input type="file" accept="application/pdf" multiple onChange={(e) => setAddFiles([...e.target.files])} disabled={busy} />
-            <button className="primary" disabled={busy || !addFiles.length}>{busy ? 'Working...' : 'Add rotas'}</button>
-          </form>
+          <div className="pe-block">
+            <h4>Pull in newly uploaded rotas</h4>
+            <p className="muted small">If you've uploaded more rotas since, add any of their days that fall in this bracket. Existing edits are kept.</p>
+            <button className="primary" onClick={pullRotas} disabled={busy}>{busy ? 'Working...' : 'Pull in stored rotas'}</button>
+          </div>
 
-          <form className="pe-block" onSubmit={checkRevert}>
-            <h4>Revert to the PDF</h4>
-            <p className="muted small">Re-upload the original rota to undo manual edits. You will see how many shifts change before anything is applied.</p>
-            <input type="file" accept="application/pdf" multiple
-              onChange={(e) => { setRevertFiles([...e.target.files]); setRevertPreview(null); }} disabled={busy} />
+          <div className="pe-block">
+            <h4>Reset to the original rota</h4>
+            <p className="muted small">Undo manual edits by resetting this period back to the stored rotas. You'll see what changes before anything is applied.</p>
             {!revertPreview ? (
-              <button className="primary" disabled={busy || !revertFiles.length}>{busy ? 'Checking...' : 'Check what would change'}</button>
+              <button className="primary" onClick={checkRevert} disabled={busy}>{busy ? 'Checking...' : 'Check what would change'}</button>
             ) : (
               <div className="revert-confirm">
                 <p className="warn">
                   This will change <strong>{revertPreview.willChange}</strong> of {revertPreview.totalInPdf} shifts
-                  back to the PDF{revertPreview.willChange === 0 ? ' (nothing differs).' : ' - review below:'}
+                  back to the stored rota{revertPreview.willChange === 0 ? ' (nothing differs).' : ' - review below:'}
                 </p>
                 {revertPreview.changes && revertPreview.changes.length > 0 && (
                   <div className="revert-list" style={{ maxHeight: '260px', overflowY: 'auto', margin: '0.4rem 0', border: '1px solid var(--line)', borderRadius: '8px', padding: '0.3rem 0.6rem' }}>
@@ -135,12 +121,12 @@ export default function PeriodTools({ month, outsideBracket, onChanged }) {
                 <div className="modal-actions">
                   <button type="button" className="ghost" onClick={cancelRevert} disabled={busy}>Cancel</button>
                   <button type="button" className="primary" onClick={applyRevert} disabled={busy || revertPreview.willChange === 0}>
-                    {busy ? 'Reverting...' : 'Apply revert'}
+                    {busy ? 'Resetting...' : 'Apply reset'}
                   </button>
                 </div>
               </div>
             )}
-          </form>
+          </div>
         </div>
       )}
     </div>

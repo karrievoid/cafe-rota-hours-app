@@ -9,64 +9,41 @@ function monShort(name) {
     .findIndex((m) => m.toLowerCase() === String(name).toLowerCase());
   return i === -1 ? (name || '') : MO[i];
 }
-// A week is identified by its month hint + the day numbers it covers. Two files
-// covering the same week share this signature (a "version clash").
-function weekSignature(w) {
-  return `${w.monthHint || '?'}|${(w.days || []).map((d) => d && d.day).filter(Boolean).join('-')}`;
-}
-function weekLabel(w) {
-  const ds = (w.days || []).filter((d) => d && d.day);
-  if (!ds.length) return 'week';
-  const mo = monShort(w.monthHint);
-  return `${mo} ${ds[0].day} - ${ds[ds.length - 1].day}`.trim();
+function dupLabel(d) {
+  const mo = monShort(d.monthHint);
+  const r = d.dayRange && d.dayRange[0] != null ? `${d.dayRange[0]}-${d.dayRange[1]}` : '';
+  return `${mo} ${r}`.trim() || d.signature;
 }
 
-function findClashes(weeks) {
-  const groups = new Map();
-  weeks.forEach((w, i) => {
-    const sig = weekSignature(w);
-    if (!groups.has(sig)) groups.set(sig, []);
-    groups.get(sig).push(i);
-  });
-  return [...groups.entries()]
-    .filter(([, idxs]) => idxs.length > 1)
-    .map(([sig, idxs]) => ({ sig, label: weekLabel(weeks[idxs[0]]), indexes: idxs }));
-}
-
+// Two steps, as separate cards:
+//  Step 1 - Upload rotas: stored in the canonical rota table; re-upload replaces.
+//  Step 2 - Create period: builds a view from the stored rotas inside a bracket.
 export default function Upload({ onCreated }) {
-  const def = defaultBracket();
-  const [mode, setMode] = useState('upload');    // 'upload' | 'stored'
+  return (
+    <>
+      <RotaLibrary />
+      <CreatePeriod onCreated={onCreated} />
+    </>
+  );
+}
+
+/* ---------------- Step 1: the uploaded-rota library ---------------- */
+function RotaLibrary() {
+  const [stored, setStored] = useState([]);
   const [files, setFiles] = useState([]);
-  const [startDate, setStartDate] = useState(def.start);
-  const [endDate, setEndDate] = useState(def.end);
-  const [label, setLabel] = useState('');
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState('');
   const [error, setError] = useState('');
   const [warnings, setWarnings] = useState([]);
-  const [parsed, setParsed] = useState(null);
-  const [clashes, setClashes] = useState([]);
-  const [choice, setChoice] = useState({});
+  const [pending, setPending] = useState(null); // { weeks, duplicates } awaiting replace confirm
 
-  const [stored, setStored] = useState([]);
-  const [chosen, setChosen] = useState(() => new Set());
-
-  async function loadStored() { try { setStored(await api.listUploads()); } catch { /* ignore */ } }
+  async function loadStored() { try { setStored(await api.listRotas()); } catch { /* ignore */ } }
   useEffect(() => { loadStored(); }, []);
 
-  async function finalize(weeks) {
-    setStep('Saving period...');
-    const created = await api.saveMonth({ weeks, startDate, endDate, label: label || undefined });
-    toast('Period created');
-    loadStored();
-    onCreated(created.id);
-  }
-
-  async function submit(e) {
+  async function upload(e) {
     e.preventDefault();
     if (!files.length) { setError('Choose at least one rota PDF.'); return; }
-    if (startDate > endDate) { setError('Start date must be on or before the end date.'); return; }
-    setBusy(true); setError(''); setWarnings([]);
+    setBusy(true); setError(''); setWarnings([]); setPending(null);
     try {
       setStep('Reading PDFs...');
       const fd = new FormData();
@@ -74,163 +51,142 @@ export default function Upload({ onCreated }) {
       const { weeks, warnings: w } = await api.parsePdfs(fd);
       if (w && w.length) setWarnings(w);
 
-      const cl = findClashes(weeks);
-      if (cl.length) {
-        const initial = {};
-        for (const c of cl) initial[c.sig] = c.indexes[0];
-        setParsed(weeks); setClashes(cl); setChoice(initial);
-        setBusy(false); setStep('');
+      setStep('Saving to the rota library...');
+      const res = await api.ingestRotas(weeks, false);
+      if (res.applied === false && res.duplicates && res.duplicates.length) {
+        // Some of these weeks are already stored - ask before replacing.
+        setPending({ weeks, duplicates: res.duplicates });
         return;
       }
-      await finalize(weeks);
-    } catch (err) {
-      setError(err.message); toast(err.message, 'error');
-    } finally {
-      if (!clashes.length) { setBusy(false); setStep(''); }
-    }
+      finishUpload(res);
+    } catch (err) { setError(err.message); toast(err.message, 'error'); }
+    finally { setBusy(false); setStep(''); }
   }
 
-  async function confirmChoices() {
-    setBusy(true); setError('');
+  async function confirmReplace() {
+    setBusy(true); setStep('Replacing...');
     try {
-      const drop = new Set();
-      for (const c of clashes) {
-        const keep = choice[c.sig];
-        for (const idx of c.indexes) if (idx !== keep) drop.add(idx);
-      }
-      const finalWeeks = parsed.filter((_, i) => !drop.has(i));
-      await finalize(finalWeeks);
-    } catch (err) {
-      setError(err.message); toast(err.message, 'error');
-    } finally { setBusy(false); setStep(''); }
+      const res = await api.ingestRotas(pending.weeks, true);
+      setPending(null);
+      finishUpload(res);
+    } catch (err) { setError(err.message); toast(err.message, 'error'); }
+    finally { setBusy(false); setStep(''); }
   }
 
-  async function buildFromStored(e) {
+  function finishUpload(res) {
+    setFiles([]);
+    const bits = [];
+    if (res.added) bits.push(`${res.added} added`);
+    if (res.replaced) bits.push(`${res.replaced} replaced`);
+    toast(bits.length ? `Rotas saved (${bits.join(', ')})` : 'Rotas saved');
+    loadStored();
+  }
+
+  return (
+    <div className="card upload accent-new">
+      <h2>1. Upload rotas</h2>
+      <p className="muted">
+        Add the weekly rota PDFs. They're stored here as the single source of truth -
+        day by day, per person. Re-uploading a week you already have just updates that
+        one (you'll be asked to confirm first). Create a pay period below once they're in.
+      </p>
+
+      <form onSubmit={upload}>
+        <label className="field">
+          <span>Rota PDFs</span>
+          <input type="file" accept="application/pdf" multiple disabled={busy}
+            onChange={(e) => setFiles([...e.target.files])} />
+        </label>
+        {files.length > 0 && <ul className="filelist">{files.map((f) => <li key={f.name}>{f.name}</li>)}</ul>}
+
+        {busy && <div className="processing"><span className="spinner" /> {step || 'Working...'}</div>}
+
+        {pending && (
+          <div className="warn">
+            Already in the library: {pending.duplicates.map(dupLabel).join(', ')}.
+            <div className="modal-actions" style={{ marginTop: '0.5rem' }}>
+              <button type="button" className="ghost" onClick={() => setPending(null)} disabled={busy}>Keep existing</button>
+              <button type="button" className="primary" onClick={confirmReplace} disabled={busy}>Replace with new upload</button>
+            </div>
+          </div>
+        )}
+
+        {warnings.length > 0 && (
+          <div className="warn">
+            Some pages couldn&apos;t be read fully:
+            <ul>{warnings.map((w, i) => <li key={i}>{w.source ? `${w.source}: ` : ''}{w.page ? `page ${w.page} - ` : ''}{w.reason}</li>)}</ul>
+          </div>
+        )}
+        {error && <div className="error">{error}</div>}
+        {!pending && <button className="primary" disabled={busy || !files.length}>{busy ? (step || 'Working...') : 'Upload to library'}</button>}
+      </form>
+
+      <div className="stored-head">
+        <h4>Stored rotas {stored.length ? `(${stored.length})` : ''}</h4>
+      </div>
+      {stored.length === 0 ? (
+        <p className="muted small">No rotas uploaded yet.</p>
+      ) : (
+        <ul className="stored-list">
+          {stored.map((u) => (
+            <li key={u.id}>
+              <span className="stored-name">{monShort(u.monthHint)} {u.dayFrom != null ? `${u.dayFrom}-${u.dayTo}` : ''}</span>
+              <span className="muted small">{u.source || ''}</span>
+              <button className="del" title="Remove from library"
+                onClick={async () => { if (confirm('Remove this rota from the library?')) { await api.deleteRota(u.id); loadStored(); } }}>x</button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Step 2: create a period from stored rotas ---------------- */
+function CreatePeriod({ onCreated }) {
+  const def = defaultBracket();
+  const [startDate, setStartDate] = useState(def.start);
+  const [endDate, setEndDate] = useState(def.end);
+  const [label, setLabel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function create(e) {
     e.preventDefault();
     if (startDate > endDate) { setError('Start date must be on or before the end date.'); return; }
     setBusy(true); setError('');
     try {
-      const uploadIds = chosen.size ? [...chosen] : undefined;
-      const created = await api.saveMonthFromStored({ startDate, endDate, label: label || undefined, uploadIds });
-      toast('Period created from stored rotas');
+      const created = await api.saveMonth({ startDate, endDate, label: label || undefined });
+      toast(`Period created${created.added != null ? ` (${created.added} shifts)` : ''}`);
       onCreated(created.id);
-    } catch (err) {
-      setError(err.message); toast(err.message, 'error');
-    } finally { setBusy(false); }
-  }
-
-  function toggleStored(id) {
-    setChosen((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  }
-
-  // ---- version chooser ----
-  if (parsed && clashes.length) {
-    return (
-      <div className="card upload accent-new">
-        <h2>Choose which rota version to use</h2>
-        <p className="muted">More than one uploaded file covers the same week. Pick the correct version for each.</p>
-        {clashes.map((c) => (
-          <div className="clash" key={c.sig}>
-            <div className="clash-week">{c.label}</div>
-            {c.indexes.map((idx) => (
-              <label className="clash-opt" key={idx}>
-                <input type="radio" name={c.sig} checked={choice[c.sig] === idx}
-                  onChange={() => setChoice((ch) => ({ ...ch, [c.sig]: idx }))} />
-                <span>{parsed[idx].source || `version ${idx + 1}`}</span>
-              </label>
-            ))}
-          </div>
-        ))}
-        {error && <div className="error">{error}</div>}
-        <div className="modal-actions">
-          <button className="ghost" onClick={() => { setParsed(null); setClashes([]); }}>Cancel</button>
-          <button className="primary" disabled={busy} onClick={confirmChoices}>{busy ? 'Saving...' : 'Use selected & create'}</button>
-        </div>
-      </div>
-    );
+    } catch (err) { setError(err.message); toast(err.message, 'error'); }
+    finally { setBusy(false); }
   }
 
   return (
-    <form className="card upload accent-new" onSubmit={mode === 'upload' ? submit : buildFromStored}>
-      <h2>New pay period</h2>
-
-      <div className="view-toggle" style={{ marginBottom: '0.6rem' }}>
-        <button type="button" className={mode === 'upload' ? 'active' : ''} onClick={() => setMode('upload')}>Upload PDFs</button>
-        <button type="button" className={mode === 'stored' ? 'active' : ''} onClick={() => setMode('stored')}>
-          From stored rotas{stored.length ? ` (${stored.length})` : ''}
-        </button>
-      </div>
-
-      {mode === 'upload' ? (
-        <>
-          <p className="muted">
-            Upload the weekly rota PDFs, then set which days count. The right dates are worked out
-            from the calendar, so a misspelled or missing month heading no longer matters. Days
-            outside the bracket are kept but not totalled - widen it or add rotas later.
-          </p>
-          <label className="field">
-            <span>Rota PDFs</span>
-            <input type="file" accept="application/pdf" multiple onChange={(e) => setFiles([...e.target.files])} />
-          </label>
-          {files.length > 0 && <ul className="filelist">{files.map((f) => <li key={f.name}>{f.name}</li>)}</ul>}
-        </>
-      ) : (
-        <>
-          <p className="muted">
-            Build this period from rotas already uploaded - no need to upload them again. Leave all
-            unticked to use every stored rota, or tick the ones you want.
-          </p>
-          {stored.length === 0 && <p className="muted">No stored rotas yet - upload some first.</p>}
-          {stored.length > 0 && (
-            <ul className="stored-list">
-              {stored.map((u) => (
-                <li key={u.id}>
-                  <label>
-                    <input type="checkbox" checked={chosen.has(u.id)} onChange={() => toggleStored(u.id)} />
-                    <span className="stored-name">{u.filename || 'rota'}</span>
-                    <span className="muted small">
-                      {u.monthHints && u.monthHints.length ? u.monthHints.join(', ') : 'month ?'}
-                      {u.dayRange ? ` - days ${u.dayRange[0]}-${u.dayRange[1]}` : ''}
-                    </span>
-                  </label>
-                  <button type="button" className="del" title="Remove from library"
-                    onClick={async () => { await api.deleteUpload(u.id); loadStored(); }}>x</button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      )}
-
+    <form className="card upload" onSubmit={create}>
+      <h2>2. Create a pay period</h2>
+      <p className="muted">
+        Pick the dates this period should count. The view is built from the stored rotas
+        above - the right days are worked out from the calendar. Editing the period later
+        only changes the view, never your uploaded rotas.
+      </p>
       <div className="row">
         <label className="field"><span>Bracket start</span>
-          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} disabled={busy} />
         </label>
         <label className="field"><span>Bracket end</span>
-          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} disabled={busy} />
         </label>
       </div>
       <p className="muted small">Counts {fmtDateFull(startDate)} to {fmtDateFull(endDate)}.</p>
-
       <label className="field"><span>Label (optional)</span>
-        <input placeholder="e.g. June payroll" value={label} onChange={(e) => setLabel(e.target.value)} />
+        <input placeholder="e.g. June payroll" value={label} onChange={(e) => setLabel(e.target.value)} disabled={busy} />
       </label>
 
-      {warnings.length > 0 && (
-        <div className="warn">
-          Some pages couldn&apos;t be read fully:
-          <ul>
-            {warnings.map((w, i) => (
-              <li key={i}>{w.source ? `${w.source}: ` : ''}{w.page ? `page ${w.page} - ` : ''}{w.reason}</li>
-            ))}
-          </ul>
-          Everything else was still imported - add anything missing by hand on the next screen.
-        </div>
-      )}
+      {busy && <div className="processing"><span className="spinner" /> Building period from stored rotas...</div>}
       {error && <div className="error">{error}</div>}
-      <button className="primary" disabled={busy}>
-        {busy ? (step || 'Working...') : (mode === 'upload' ? 'Create period' : 'Build from stored rotas')}
-      </button>
+      <button className="primary" disabled={busy}>{busy ? 'Building...' : 'Create period'}</button>
     </form>
   );
 }

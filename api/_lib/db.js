@@ -102,14 +102,21 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT
 );
 
--- Every parsed rota PDF is kept here in full (all weeks, all people, all days),
--- so a new period can be built from already-uploaded rotas without re-uploading
--- the same files. The parsed column is the exact weeks structure from the parser.
-CREATE TABLE IF NOT EXISTS rota_uploads (
+-- The canonical store of uploaded rotas, one row per weekly rota. This is the
+-- single source of truth for raw rota data (day by day, per person). Re-uploading
+-- the same week REPLACES its row (matched on signature = month + day sequence)
+-- rather than adding a duplicate. A pay period is built by reading the weeks that
+-- fall in its bracket from here - editing a period never touches this table.
+CREATE TABLE IF NOT EXISTS rota_weeks (
   id          SERIAL PRIMARY KEY,
-  filename    TEXT,
-  parsed      JSONB NOT NULL,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  signature   TEXT UNIQUE NOT NULL,   -- month hint + day-number sequence
+  source      TEXT,                   -- filename it most recently came from
+  month_hint  TEXT,
+  day_from    INT,
+  day_to      INT,
+  parsed      JSONB NOT NULL,         -- one week { monthHint, days, people, source }
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS password_resets (

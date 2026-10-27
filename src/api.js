@@ -44,13 +44,15 @@ export const api = {
   getMonth: (id) => request(`/months/${id}`),
   deleteMonth: (id) => request(`/months/${id}`, { method: 'DELETE' }),
   parsePdfs: (formData) => request('/parse', { method: 'POST', body: formData, isForm: true }),
+  // Canonical uploaded-rota store
+  listRotas: () => request('/rotas'),
+  ingestRotas: (weeks, replace = false) => request('/rotas/ingest', { method: 'POST', body: { weeks, replace } }),
+  deleteRota: (id) => request(`/rotas/${id}`, { method: 'DELETE' }),
+  // Create a period from the STORED rotas that fall in the bracket.
   saveMonth: (payload) => request('/months', { method: 'POST', body: payload }),
-  saveMonthFromStored: (payload) => request('/months/from-stored', { method: 'POST', body: payload }),
-  listUploads: () => request('/uploads'),
-  deleteUpload: (id) => request(`/uploads/${id}`, { method: 'DELETE' }),
   updateMonth: (id, patch) => request(`/months/${id}`, { method: 'PATCH', body: patch }),
-  addRotas: (id, weeks) => request(`/months/${id}/rotas`, { method: 'POST', body: { weeks } }),
-  revert: (id, weeks, apply) => request(`/months/${id}/revert`, { method: 'POST', body: { weeks, apply } }),
+  pullStoredRotas: (id) => request(`/months/${id}/rotas`, { method: 'POST' }),
+  revert: (id, apply) => request(`/months/${id}/revert`, { method: 'POST', body: { apply } }),
   setLeave: (id, personKey, hoursPerDay) =>
     request(`/months/${id}/leave`, { method: 'POST', body: { personKey, hoursPerDay } }),
   updateShift: (id, patch) => request(`/shifts/${id}`, { method: 'PATCH', body: patch }),
