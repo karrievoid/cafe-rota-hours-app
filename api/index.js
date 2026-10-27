@@ -5,7 +5,7 @@ import cors from 'cors';
 
 import { query, ensureSchema } from './_lib/db.js';
 import { signToken, requireAuth, hasManager, registerManager, loginManager, checkStaffPin, getStaffPin, setStaffPin, setSecurity, getSecurity, getSecurityQuestion, resetWithSecurity, changePassword } from './_lib/auth.js';
-import { buildAllRecords, monthNumFromName, monthBracket, MONTHS } from './_lib/buildShifts.js';
+import { buildAllRecords, monthNumFromName, monthBracket, MONTHS, resolveWeekAbsolute } from './_lib/buildShifts.js';
 import { paidMinutesFromSpan } from './_lib/shifts.js';
 
 const app = express();
@@ -189,14 +189,17 @@ async function insertRecords(monthId, records) {
 
 // A week's identity: month hint + the day-number sequence it covers. Two uploads
 // of the same week share this, so a re-upload replaces rather than duplicates.
-function weekSignature(w) {
-  const days = (w.days || []).map((d) => (d && d.day != null ? d.day : 'x')).join('-');
-  return `${w.monthHint || '?'}|${days}`;
+function weekSeq(w) { return (w.days || []).map((d) => (d && d.day != null ? d.day : null)); }
+// Identify a week by its REAL start date (resolved on the calendar nearest today),
+// so each actual week is stored once and different years never collide. Falls back
+// to month-hint + sequence if the week can't be placed.
+function weekIdentity(w) {
+  const abs = resolveWeekAbsolute(weekSeq(w), w.monthHint, new Date().toISOString().slice(0, 10));
+  if (abs) return { signature: abs.start, coversStart: abs.start, coversEnd: abs.end };
+  const seq = weekSeq(w).map((d) => (d == null ? 'x' : d)).join('-');
+  return { signature: `${w.monthHint || '?'}|${seq}`, coversStart: null, coversEnd: null };
 }
-function weekDayRange(w) {
-  const ds = (w.days || []).map((d) => d && d.day).filter((x) => x != null);
-  return ds.length ? [Math.min(...ds), Math.max(...ds)] : [null, null];
-}
+
 async function loadStoredWeeks() {
   const { rows } = await query(`SELECT parsed FROM rota_weeks`);
   return rows.map((r) => r.parsed);
@@ -211,7 +214,9 @@ async function createPeriodFromStored(startDate, endDate, label) {
      VALUES ($1,$2,$3,$4,$5) RETURNING *`, [lbl, sM, sY, startDate, endDate]);
   const month0 = monthRes.rows[0];
   const weeks = await loadStoredWeeks();
-  const records = buildAllRecords(weeks, startDate, endDate);
+  // A period is just the view of its bracket - store only the bracket's days.
+  // The rota_weeks table is the source of truth, so widening later just pulls more.
+  const records = buildAllRecords(weeks, startDate, endDate).filter((r) => r.workDate >= startDate && r.workDate <= endDate);
   const added = await insertRecords(month0.id, records);
   return { month0, added };
 }
@@ -236,11 +241,11 @@ app.get('/api/months', requireAuth, async (req, res, next) => {
 app.get('/api/rotas', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await query(
-      `SELECT id, signature, source, month_hint, day_from, day_to, updated_at
-         FROM rota_weeks ORDER BY month_hint, day_from, id`);
+      `SELECT id, signature, source, month_hint, covers_start, covers_end, updated_at
+         FROM rota_weeks ORDER BY covers_start NULLS LAST, id`);
     res.json(rows.map((r) => ({
       id: r.id, signature: r.signature, source: r.source, monthHint: r.month_hint,
-      dayFrom: r.day_from, dayTo: r.day_to, updatedAt: r.updated_at,
+      coversStart: dstr(r.covers_start), coversEnd: dstr(r.covers_end), updatedAt: r.updated_at,
     })));
   } catch (e) { next(e); }
 });
@@ -255,31 +260,31 @@ app.post('/api/rotas/ingest', requireAuth, async (req, res, next) => {
     if (!Array.isArray(weeks) || weeks.length === 0) {
       return res.status(400).json({ error: 'No parsed rota data received' });
     }
-    const bySig = new Map();
-    for (const w of weeks) bySig.set(weekSignature(w), w); // last version wins within one upload
-    const sigs = [...bySig.keys()];
+    const byId = new Map(); // signature -> { w, id }
+    for (const w of weeks) { const id = weekIdentity(w); byId.set(id.signature, { w, id }); }
+    const sigs = [...byId.keys()];
     const existing = await query(`SELECT signature FROM rota_weeks WHERE signature = ANY($1)`, [sigs]);
     const existingSigs = new Set(existing.rows.map((r) => r.signature));
 
     if (existingSigs.size && !replace) {
-      const duplicates = [...bySig.entries()]
+      const duplicates = [...byId.entries()]
         .filter(([sig]) => existingSigs.has(sig))
-        .map(([sig, w]) => ({ signature: sig, monthHint: w.monthHint || null, dayRange: weekDayRange(w), source: w.source || null }));
+        .map(([sig, { w, id }]) => ({ signature: sig, monthHint: w.monthHint || null,
+          coversStart: id.coversStart, coversEnd: id.coversEnd, source: w.source || null }));
       return res.json({ applied: false, duplicates });
     }
 
     let added = 0; let replaced = 0;
-    for (const [sig, w] of bySig.entries()) {
-      const [df, dt] = weekDayRange(w);
+    for (const [sig, { w, id }] of byId.entries()) {
       const r = await query(
-        `INSERT INTO rota_weeks (signature, source, month_hint, day_from, day_to, parsed)
+        `INSERT INTO rota_weeks (signature, source, month_hint, covers_start, covers_end, parsed)
          VALUES ($1,$2,$3,$4,$5,$6)
          ON CONFLICT (signature) DO UPDATE
            SET source=EXCLUDED.source, month_hint=EXCLUDED.month_hint,
-               day_from=EXCLUDED.day_from, day_to=EXCLUDED.day_to,
+               covers_start=EXCLUDED.covers_start, covers_end=EXCLUDED.covers_end,
                parsed=EXCLUDED.parsed, updated_at=now()
          RETURNING (xmax = 0) AS inserted`,
-        [sig, w.source || null, w.monthHint || null, df, dt, JSON.stringify(w)]);
+        [sig, w.source || null, w.monthHint || null, id.coversStart, id.coversEnd, JSON.stringify(w)]);
       if (r.rows[0].inserted) added += 1; else replaced += 1;
     }
     res.json({ applied: true, added, replaced });
@@ -356,6 +361,12 @@ app.patch('/api/months/:id', requireAuth, async (req, res, next) => {
     const upd = await query(
       `UPDATE rota_months SET start_date=$1, end_date=$2, label=$3 WHERE id=$4 RETURNING *`,
       [startDate, endDate, label, id]);
+    // Widening the bracket should fill the new days from the stored rotas (edits kept).
+    const weeks = await loadStoredWeeks();
+    if (weeks.length) {
+      const recs = buildAllRecords(weeks, startDate, endDate).filter((r) => r.workDate >= startDate && r.workDate <= endDate);
+      await insertRecords(id, recs);
+    }
     res.json(monthObj(upd.rows[0]));
   } catch (e) { next(e); }
 });
@@ -369,8 +380,9 @@ app.post('/api/months/:id/rotas', requireAuth, async (req, res, next) => {
     const m = await query(`SELECT * FROM rota_months WHERE id=$1`, [id]);
     if (!m.rows.length) return res.status(404).json({ error: 'Period not found' });
     const row = m.rows[0];
+    const start = dstr(row.start_date); const end = dstr(row.end_date);
     const weeks = await loadStoredWeeks();
-    const records = buildAllRecords(weeks, dstr(row.start_date), dstr(row.end_date));
+    const records = buildAllRecords(weeks, start, end).filter((r) => r.workDate >= start && r.workDate <= end);
     const added = await insertRecords(id, records);
     res.json({ added });
   } catch (e) { next(e); }

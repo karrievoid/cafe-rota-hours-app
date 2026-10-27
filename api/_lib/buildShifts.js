@@ -92,6 +92,21 @@ export function resolveWeekDates(seq, hintName, startISO, endISO) {
   return best ? best.dates : null;
 }
 
+// Place a single week on the real calendar nearest to a reference date (today),
+// used when STORING a week so it gets a correct date range / label independent of
+// any pay period. Returns { start, end } ISO strings, or null.
+export function resolveWeekAbsolute(seq, hintName, refISO) {
+  const ref = refISO || new Date().toISOString().slice(0, 10);
+  const refMs = Date.parse(ref);
+  const startISO = new Date(refMs - 200 * 86400000).toISOString().slice(0, 10);
+  const endISO = new Date(refMs + 200 * 86400000).toISOString().slice(0, 10);
+  const dates = resolveWeekDates(seq, hintName, startISO, endISO);
+  if (!dates) return null;
+  const nn = dates.filter(Boolean);
+  if (!nn.length) return null;
+  return { start: nn[0], end: nn[nn.length - 1] };
+}
+
 // Build shift records for every parsed day (no trimming). Deduped by person+date.
 // Each record carries personSeq (the order the person appears on the rota) so
 // the UI can show people in rota order as well as alphabetically.

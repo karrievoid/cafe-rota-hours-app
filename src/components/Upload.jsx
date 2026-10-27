@@ -9,10 +9,13 @@ function monShort(name) {
     .findIndex((m) => m.toLowerCase() === String(name).toLowerCase());
   return i === -1 ? (name || '') : MO[i];
 }
+function rangeLabel(a, b) {
+  if (!a) return '';
+  const f = (iso) => { const [, m, d] = iso.split('-').map(Number); return `${d} ${MO[m - 1]}`; };
+  return a === b || !b ? f(a) : `${f(a)} - ${f(b)}`;
+}
 function dupLabel(d) {
-  const mo = monShort(d.monthHint);
-  const r = d.dayRange && d.dayRange[0] != null ? `${d.dayRange[0]}-${d.dayRange[1]}` : '';
-  return `${mo} ${r}`.trim() || d.signature;
+  return rangeLabel(d.coversStart, d.coversEnd) || `${monShort(d.monthHint)}`.trim() || d.signature;
 }
 
 // Two steps, as separate cards:
@@ -130,7 +133,7 @@ function RotaLibrary() {
         <ul className="stored-list">
           {stored.map((u) => (
             <li key={u.id}>
-              <span className="stored-name">{monShort(u.monthHint)} {u.dayFrom != null ? `${u.dayFrom}-${u.dayTo}` : ''}</span>
+              <span className="stored-name">{rangeLabel(u.coversStart, u.coversEnd) || monShort(u.monthHint)}</span>
               <span className="muted small">{u.source || ''}</span>
               <button className="del" title="Remove from library"
                 onClick={async () => { if (confirm('Remove this rota from the library?')) { await api.deleteRota(u.id); loadStored(); } }}>x</button>

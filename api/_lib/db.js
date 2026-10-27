@@ -108,16 +108,19 @@ CREATE TABLE IF NOT EXISTS settings (
 -- rather than adding a duplicate. A pay period is built by reading the weeks that
 -- fall in its bracket from here - editing a period never touches this table.
 CREATE TABLE IF NOT EXISTS rota_weeks (
-  id          SERIAL PRIMARY KEY,
-  signature   TEXT UNIQUE NOT NULL,   -- month hint + day-number sequence
-  source      TEXT,                   -- filename it most recently came from
-  month_hint  TEXT,
-  day_from    INT,
-  day_to      INT,
-  parsed      JSONB NOT NULL,         -- one week { monthHint, days, people, source }
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  id           SERIAL PRIMARY KEY,
+  signature    TEXT UNIQUE NOT NULL,  -- the week's real start date (ISO), so each
+                                      -- actual week is stored once; re-upload replaces
+  source       TEXT,                  -- filename it most recently came from
+  month_hint   TEXT,
+  covers_start DATE,                  -- real first day of the week
+  covers_end   DATE,                  -- real last day of the week
+  parsed       JSONB NOT NULL,        -- one week { monthHint, days, people, source }
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE rota_weeks ADD COLUMN IF NOT EXISTS covers_start DATE;
+ALTER TABLE rota_weeks ADD COLUMN IF NOT EXISTS covers_end   DATE;
 
 CREATE TABLE IF NOT EXISTS password_resets (
   id          SERIAL PRIMARY KEY,
