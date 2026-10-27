@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { api } from '../api.js';
 import { toast } from '../toast.js';
 import { defaultBracket, fmtDateFull } from '../util.js';
@@ -7,19 +7,20 @@ const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct'
 function monShort(name) {
   const i = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
     .findIndex((m) => m.toLowerCase() === String(name).toLowerCase());
-  return i === -1 ? name : MO[i];
+  return i === -1 ? (name || '') : MO[i];
 }
+// A week is identified by its month hint + the day numbers it covers. Two files
+// covering the same week share this signature (a "version clash").
 function weekSignature(w) {
-  return (w.days || []).filter((d) => d && d.day).map((d) => `${d.month}-${d.day}`).join('|');
+  return `${w.monthHint || '?'}|${(w.days || []).map((d) => d && d.day).filter(Boolean).join('-')}`;
 }
 function weekLabel(w) {
   const ds = (w.days || []).filter((d) => d && d.day);
   if (!ds.length) return 'week';
-  const a = ds[0]; const b = ds[ds.length - 1];
-  return `${monShort(a.month)} ${a.day} - ${monShort(b.month)} ${b.day}`;
+  const mo = monShort(w.monthHint);
+  return `${mo} ${ds[0].day} - ${ds[ds.length - 1].day}`.trim();
 }
 
-// Group weeks by the days they cover; any group with >1 week is a "version clash".
 function findClashes(weeks) {
   const groups = new Map();
   weeks.forEach((w, i) => {
@@ -34,6 +35,7 @@ function findClashes(weeks) {
 
 export default function Upload({ onCreated }) {
   const def = defaultBracket();
+  const [mode, setMode] = useState('upload');    // 'upload' | 'stored'
   const [files, setFiles] = useState([]);
   const [startDate, setStartDate] = useState(def.start);
   const [endDate, setEndDate] = useState(def.end);
@@ -41,14 +43,22 @@ export default function Upload({ onCreated }) {
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState('');
   const [error, setError] = useState('');
-  const [parsed, setParsed] = useState(null);   // weeks awaiting a version choice
+  const [warnings, setWarnings] = useState([]);
+  const [parsed, setParsed] = useState(null);
   const [clashes, setClashes] = useState([]);
-  const [choice, setChoice] = useState({});      // signature -> chosen week index
+  const [choice, setChoice] = useState({});
+
+  const [stored, setStored] = useState([]);
+  const [chosen, setChosen] = useState(() => new Set());
+
+  async function loadStored() { try { setStored(await api.listUploads()); } catch { /* ignore */ } }
+  useEffect(() => { loadStored(); }, []);
 
   async function finalize(weeks) {
     setStep('Saving period...');
     const created = await api.saveMonth({ weeks, startDate, endDate, label: label || undefined });
     toast('Period created');
+    loadStored();
     onCreated(created.id);
   }
 
@@ -56,16 +66,16 @@ export default function Upload({ onCreated }) {
     e.preventDefault();
     if (!files.length) { setError('Choose at least one rota PDF.'); return; }
     if (startDate > endDate) { setError('Start date must be on or before the end date.'); return; }
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setWarnings([]);
     try {
       setStep('Reading PDFs...');
       const fd = new FormData();
       for (const f of files) fd.append('files', f);
-      const { weeks } = await api.parsePdfs(fd);
+      const { weeks, warnings: w } = await api.parsePdfs(fd);
+      if (w && w.length) setWarnings(w);
 
       const cl = findClashes(weeks);
       if (cl.length) {
-        // Ask which version to keep for each clashing week.
         const initial = {};
         for (const c of cl) initial[c.sig] = c.indexes[0];
         setParsed(weeks); setClashes(cl); setChoice(initial);
@@ -93,6 +103,24 @@ export default function Upload({ onCreated }) {
     } catch (err) {
       setError(err.message); toast(err.message, 'error');
     } finally { setBusy(false); setStep(''); }
+  }
+
+  async function buildFromStored(e) {
+    e.preventDefault();
+    if (startDate > endDate) { setError('Start date must be on or before the end date.'); return; }
+    setBusy(true); setError('');
+    try {
+      const uploadIds = chosen.size ? [...chosen] : undefined;
+      const created = await api.saveMonthFromStored({ startDate, endDate, label: label || undefined, uploadIds });
+      toast('Period created from stored rotas');
+      onCreated(created.id);
+    } catch (err) {
+      setError(err.message); toast(err.message, 'error');
+    } finally { setBusy(false); }
+  }
+
+  function toggleStored(id) {
+    setChosen((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   }
 
   // ---- version chooser ----
@@ -123,18 +151,56 @@ export default function Upload({ onCreated }) {
   }
 
   return (
-    <form className="card upload accent-new" onSubmit={submit}>
+    <form className="card upload accent-new" onSubmit={mode === 'upload' ? submit : buildFromStored}>
       <h2>New pay period</h2>
-      <p className="muted">
-        Upload the weekly rota PDFs, then set which days count. Days outside the bracket are
-        kept but not totalled - you can widen the bracket or add more rotas later.
-      </p>
 
-      <label className="field">
-        <span>Rota PDFs</span>
-        <input type="file" accept="application/pdf" multiple onChange={(e) => setFiles([...e.target.files])} />
-      </label>
-      {files.length > 0 && <ul className="filelist">{files.map((f) => <li key={f.name}>{f.name}</li>)}</ul>}
+      <div className="view-toggle" style={{ marginBottom: '0.6rem' }}>
+        <button type="button" className={mode === 'upload' ? 'active' : ''} onClick={() => setMode('upload')}>Upload PDFs</button>
+        <button type="button" className={mode === 'stored' ? 'active' : ''} onClick={() => setMode('stored')}>
+          From stored rotas{stored.length ? ` (${stored.length})` : ''}
+        </button>
+      </div>
+
+      {mode === 'upload' ? (
+        <>
+          <p className="muted">
+            Upload the weekly rota PDFs, then set which days count. The right dates are worked out
+            from the calendar, so a misspelled or missing month heading no longer matters. Days
+            outside the bracket are kept but not totalled - widen it or add rotas later.
+          </p>
+          <label className="field">
+            <span>Rota PDFs</span>
+            <input type="file" accept="application/pdf" multiple onChange={(e) => setFiles([...e.target.files])} />
+          </label>
+          {files.length > 0 && <ul className="filelist">{files.map((f) => <li key={f.name}>{f.name}</li>)}</ul>}
+        </>
+      ) : (
+        <>
+          <p className="muted">
+            Build this period from rotas already uploaded - no need to upload them again. Leave all
+            unticked to use every stored rota, or tick the ones you want.
+          </p>
+          {stored.length === 0 && <p className="muted">No stored rotas yet - upload some first.</p>}
+          {stored.length > 0 && (
+            <ul className="stored-list">
+              {stored.map((u) => (
+                <li key={u.id}>
+                  <label>
+                    <input type="checkbox" checked={chosen.has(u.id)} onChange={() => toggleStored(u.id)} />
+                    <span className="stored-name">{u.filename || 'rota'}</span>
+                    <span className="muted small">
+                      {u.monthHints && u.monthHints.length ? u.monthHints.join(', ') : 'month ?'}
+                      {u.dayRange ? ` - days ${u.dayRange[0]}-${u.dayRange[1]}` : ''}
+                    </span>
+                  </label>
+                  <button type="button" className="del" title="Remove from library"
+                    onClick={async () => { await api.deleteUpload(u.id); loadStored(); }}>x</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
 
       <div className="row">
         <label className="field"><span>Bracket start</span>
@@ -150,8 +216,21 @@ export default function Upload({ onCreated }) {
         <input placeholder="e.g. June payroll" value={label} onChange={(e) => setLabel(e.target.value)} />
       </label>
 
+      {warnings.length > 0 && (
+        <div className="warn">
+          Some pages couldn&apos;t be read fully:
+          <ul>
+            {warnings.map((w, i) => (
+              <li key={i}>{w.source ? `${w.source}: ` : ''}{w.page ? `page ${w.page} - ` : ''}{w.reason}</li>
+            ))}
+          </ul>
+          Everything else was still imported - add anything missing by hand on the next screen.
+        </div>
+      )}
       {error && <div className="error">{error}</div>}
-      <button className="primary" disabled={busy}>{busy ? (step || 'Working...') : 'Create period'}</button>
+      <button className="primary" disabled={busy}>
+        {busy ? (step || 'Working...') : (mode === 'upload' ? 'Create period' : 'Build from stored rotas')}
+      </button>
     </form>
   );
 }

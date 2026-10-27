@@ -300,3 +300,29 @@ tfoot .wtot { background: #faf7f2; }
 .person-toggle:hover .caret { border-left-color: var(--brand); }
 .person-sub { color: var(--muted); font-size: 0.8rem; white-space: nowrap; margin-right: 0.4rem; }
 .person-head .person-name { flex: 1; min-width: 0; }
+/* --- Added: order toggle, needs-review panel, stored-rota library --- */
+.order-toggle { margin-left: 0.4rem; }
+.needs-review { border-left: 4px solid #e8a33d; }
+.needs-review h2 { color: #a9671b; }
+.review-rows { display: flex; flex-direction: column; gap: 0.4rem; }
+.review-row {
+  display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+  padding: 0.4rem 0.5rem; background: #fff7e8; border: 1px solid #ead9a6; border-radius: 6px;
+}
+.review-row .rv-who { font-weight: 600; min-width: 90px; }
+.review-row .rv-date { color: #6b5a2a; min-width: 90px; }
+.review-row .rv-raw {
+  background: #fff; border: 1px solid #ead9a6; border-radius: 4px;
+  padding: 0.1rem 0.4rem; color: #7a5a12; font-size: 0.85rem;
+}
+.review-row .rv-times { display: inline-flex; align-items: center; gap: 0.25rem; }
+.review-row .rv-actions { display: inline-flex; gap: 0.3rem; margin-left: auto; }
+.review-row .rv-actions button { padding: 0.2rem 0.6rem; font-size: 0.82rem; }
+
+.stored-list { list-style: none; padding: 0; margin: 0 0 0.6rem; max-height: 220px; overflow-y: auto; }
+.stored-list li {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.5rem; padding: 0.3rem 0; border-bottom: 1px solid #efe7cf;
+}
+.stored-list label { display: flex; align-items: center; gap: 0.5rem; flex: 1; cursor: pointer; }
+.stored-list .stored-name { font-weight: 600; }

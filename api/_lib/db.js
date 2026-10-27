@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS shifts (
   person_key    TEXT NOT NULL,     -- stable identity, e.g. "Lois" or "Lois #2"
   person_name   TEXT NOT NULL,     -- name as printed
   person_label  TEXT,              -- editable display name (e.g. "Lois (Bake)")
+  person_seq    INT NOT NULL DEFAULT 0, -- order the person appears on the rota
   work_date     DATE NOT NULL,
   raw_text      TEXT,              -- original cell text
   status        TEXT NOT NULL,     -- 'work' | 'leave' | 'off' | 'unparsed'
@@ -68,6 +69,7 @@ CREATE TABLE IF NOT EXISTS shifts (
 
 CREATE INDEX IF NOT EXISTS idx_shifts_month ON shifts(month_id);
 ALTER TABLE shifts ADD COLUMN IF NOT EXISTS no_break BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS person_seq INT NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS users (
   id            SERIAL PRIMARY KEY,
@@ -98,6 +100,16 @@ ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS requester_name TEXT;
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT
+);
+
+-- Every parsed rota PDF is kept here in full (all weeks, all people, all days),
+-- so a new period can be built from already-uploaded rotas without re-uploading
+-- the same files. The parsed column is the exact weeks structure from the parser.
+CREATE TABLE IF NOT EXISTS rota_uploads (
+  id          SERIAL PRIMARY KEY,
+  filename    TEXT,
+  parsed      JSONB NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS password_resets (

@@ -13,10 +13,16 @@ const RotaGrid = forwardRef(function RotaGrid({ shifts, month, onDirtyChange, on
   const [deleted, setDeleted] = useState([]);
   const [saving, setSaving] = useState(false);
   const [view, setView] = useState(() => localStorage.getItem('rota_shiftview') || 'weekly');
+  const [sort, setSort] = useState(() => localStorage.getItem('rota_person_sort') || 'rota');
   const original = useRef(new Map());
   const newCounter = useRef(0);
 
   function chooseView(v) { setView(v); localStorage.setItem('rota_shiftview', v); }
+  function chooseSort(v) { setSort(v); localStorage.setItem('rota_person_sort', v); }
+  // People arrive from the server in rota order (person_seq); 'alpha' re-sorts A-Z.
+  const sortPeople = (arr) => (sort === 'alpha'
+    ? [...arr].sort((a, b) => (a.name || a.personLabel || a.personName).localeCompare(b.name || b.personLabel || b.personName))
+    : arr);
 
   useEffect(() => {
     setRows(shifts.map((s) => ({ ...s })));
@@ -166,6 +172,8 @@ const RotaGrid = forwardRef(function RotaGrid({ shifts, month, onDirtyChange, on
 
       <Summary month={month} summary={summary} />
 
+      <NeedsReview rows={rows} onPatch={patchRow} />
+
       <div className="viewbar">
         <p className="muted small viewbar-note">
           Edit shifts, then <strong>Save changes</strong>. Over 6h loses a 20-min break; leave is paid with no break.
@@ -174,16 +182,20 @@ const RotaGrid = forwardRef(function RotaGrid({ shifts, month, onDirtyChange, on
           <button className={view === 'weekly' ? 'active' : ''} onClick={() => chooseView('weekly')}>Weekly</button>
           <button className={view === 'person' ? 'active' : ''} onClick={() => chooseView('person')}>By person</button>
         </div>
+        <div className="view-toggle order-toggle">
+          <button className={sort === 'rota' ? 'active' : ''} onClick={() => chooseSort('rota')} title="Order people as they appear on the rota">As on rota</button>
+          <button className={sort === 'alpha' ? 'active' : ''} onClick={() => chooseSort('alpha')} title="Order people A to Z">A-Z</button>
+        </div>
       </div>
 
       {view === 'weekly' ? (
         grid.weekList.map((wk) => (
-          <WeekTable key={wk.key} week={wk} people={grid.people} cell={grid.cell}
+          <WeekTable key={wk.key} week={wk} people={sortPeople(grid.people)} cell={grid.cell}
             onPatch={patchRow} onRename={renamePerson} onAddAt={addShiftAt} />
         ))
       ) : (
         <div className="people-grid">
-          {groups.map((g) => (
+          {sortPeople(groups).map((g) => (
             <PersonCard key={g.personKey} group={g}
               onRename={renamePerson} onLeaveBulk={setLeaveBulk} onAdd={addAtEnd}
               onPatch={patchRow} onDelete={deleteRow} />
@@ -405,6 +417,52 @@ function ShiftRow({ row, onPatch, onDelete }) {
       {status === 'off' && <span className="s-times muted">-</span>}
       <span className="s-paid">{minToHours(row.paidMinutes).toFixed(2)}h</span>
       <button className="s-del" onClick={() => onDelete(row.id)} title="Delete shift">x</button>
+    </div>
+  );
+}
+
+/* ---------- Needs-review panel (parser couldn't read these cells) ---------- */
+function NeedsReview({ rows, onPatch }) {
+  const flagged = rows.filter((r) => r.status === 'unparsed');
+  if (!flagged.length) return null;
+  return (
+    <div className="card needs-review">
+      <h2>Needs a quick check ({flagged.length})</h2>
+      <p className="muted small">
+        These cells couldn&apos;t be read automatically - usually a typo on the rota.
+        Each shows exactly what was written; set the right times (or mark it off),
+        then <strong>Save changes</strong>. They drop off this list once fixed.
+      </p>
+      <div className="review-rows">
+        {flagged.map((r) => <ReviewRow key={r.id} row={r} onPatch={onPatch} />)}
+      </div>
+    </div>
+  );
+}
+
+function ReviewRow({ row, onPatch }) {
+  const [start, setStart] = useState(minToTime(row.startMin) || '');
+  const [end, setEnd] = useState(minToTime(row.endMin) || '');
+  function setWork() {
+    const s = timeToMin(start); const e = timeToMin(end);
+    if (s == null || e == null || e <= s) return;
+    onPatch(row.id, { status: 'work', startMin: s, endMin: e });
+  }
+  return (
+    <div className="review-row">
+      <span className="rv-who">{row.personLabel || row.personName}</span>
+      <span className="rv-date">{fmtDate(row.workDate)}</span>
+      <code className="rv-raw" title="Exactly what was written on the rota">{row.rawText || '(blank)'}</code>
+      <span className="rv-times">
+        <input type="time" value={start} onChange={(e) => setStart(e.target.value)} />
+        <span className="dash">-</span>
+        <input type="time" value={end} onChange={(e) => setEnd(e.target.value)} />
+      </span>
+      <span className="rv-actions">
+        <button type="button" className="primary" onClick={setWork}>Set</button>
+        <button type="button" onClick={() => onPatch(row.id, { status: 'leave', paidMinutes: 0 })}>Leave</button>
+        <button type="button" onClick={() => onPatch(row.id, { status: 'off', paidMinutes: 0 })}>Off</button>
+      </span>
     </div>
   );
 }

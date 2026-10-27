@@ -45,15 +45,32 @@ export function parseCell(raw) {
     return { status: 'off', raw: text };
   }
 
+  // Mistyped time: a decimal time glued to a letter, e.g. "17.0l". Matches a
+  // single minute-digit followed by a letter, which never happens in the real
+  // notation - legitimate forms are two-digit minutes ("15.00F&G") or the whole-
+  // hour break marker ("8B", "9.30B"), neither of which match here. We refuse to
+  // guess and flag it for the manager instead of silently reading 17:00.
+  if (/\d{1,2}\.\d(?=[A-Za-z])/.test(text)) {
+    return { status: 'unparsed', raw: text, reason: 'looks like a mistyped time' };
+  }
+
   // Pull every time-like token in order. Handles "6.45-8B, -15.00 F&G" -> [6.45,8,15.00]
   const tokens = text.match(/\d{1,2}(?:\.\d{1,2})?/g) || [];
-  if (tokens.length < 2) return { status: 'unparsed', raw: text };
+  if (tokens.length < 2) return { status: 'unparsed', raw: text, reason: 'could not find a start and end time' };
+
+  // Times are HH.MM, so the minutes part must be a real minute value.
+  for (const tk of tokens) {
+    if (tk.includes('.')) {
+      const mm = parseInt(tk.split('.')[1].padEnd(2, '0').slice(0, 2), 10);
+      if (mm > 59) return { status: 'unparsed', raw: text, reason: 'minutes over 59' };
+    }
+  }
 
   const mins = tokens.map(tokenToMinutes);
   const startMin = mins[0];
   const endMin = mins[mins.length - 1];
   const spanMinutes = endMin - startMin; // continuous block (role-change splits are contiguous)
-  if (spanMinutes <= 0) return { status: 'unparsed', raw: text };
+  if (spanMinutes <= 0) return { status: 'unparsed', raw: text, reason: 'end time is not after the start time' };
 
   return {
     status: 'work',

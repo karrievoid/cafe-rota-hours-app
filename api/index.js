@@ -114,7 +114,7 @@ function monthObj(r) {
 function rowToShift(r) {
   return {
     id: r.id, monthId: r.month_id, personKey: r.person_key, personName: r.person_name,
-    personLabel: r.person_label, workDate: dstr(r.work_date), rawText: r.raw_text,
+    personLabel: r.person_label, personSeq: r.person_seq, workDate: dstr(r.work_date), rawText: r.raw_text,
     status: r.status, startMin: r.start_min, endMin: r.end_min,
     paidMinutes: r.paid_minutes, overridden: r.overridden, noBreak: r.no_break,
   };
@@ -126,7 +126,7 @@ function buildSummary(shifts) {
     if (!map.has(s.personKey)) {
       map.set(s.personKey, {
         personKey: s.personKey, personName: s.personName, personLabel: s.personLabel,
-        paidMinutes: 0, workDays: 0, leaveDays: 0, unparsed: 0,
+        personSeq: s.personSeq ?? 0, paidMinutes: 0, workDays: 0, leaveDays: 0, unparsed: 0,
       });
     }
     const agg = map.get(s.personKey);
@@ -147,27 +147,51 @@ const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 // existing display label onto new rows for the same person so names stay consistent.
 async function insertRecords(monthId, records) {
   const existing = await query(
-    `SELECT person_key, work_date, person_label FROM shifts WHERE month_id=$1`, [monthId]);
+    `SELECT person_key, work_date, person_label, person_seq FROM shifts WHERE month_id=$1`, [monthId]);
   const seen = new Set();
   const labelByPerson = {};
+  const seqByPerson = {};
   for (const r of existing.rows) {
     seen.add(`${r.person_key}|${dstr(r.work_date)}`);
     if (r.person_label && !labelByPerson[r.person_key]) labelByPerson[r.person_key] = r.person_label;
+    if (seqByPerson[r.person_key] == null) seqByPerson[r.person_key] = r.person_seq;
   }
   let added = 0;
   for (const r of records) {
     const k = `${r.personKey}|${r.workDate}`;
     if (seen.has(k)) continue;
     seen.add(k);
+    // keep a person's existing order if they're already in this period
+    const seq = (seqByPerson[r.personKey] != null) ? seqByPerson[r.personKey] : (r.personSeq ?? 0);
+    if (seqByPerson[r.personKey] == null) seqByPerson[r.personKey] = seq;
     await query(
       `INSERT INTO shifts
-         (month_id, person_key, person_name, person_label, work_date, raw_text, status, start_min, end_min, paid_minutes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [monthId, r.personKey, r.personName, labelByPerson[r.personKey] || null, r.workDate,
+         (month_id, person_key, person_name, person_label, person_seq, work_date, raw_text, status, start_min, end_min, paid_minutes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [monthId, r.personKey, r.personName, labelByPerson[r.personKey] || null, seq, r.workDate,
        r.rawText, r.status, r.startMin, r.endMin, r.paidMinutes]);
     added += 1;
   }
   return added;
+}
+
+// Persist each uploaded file's full parsed weeks so a period can be rebuilt
+// later from the stored rotas without re-uploading. Best-effort: never blocks a save.
+function groupWeeksBySource(weeks) {
+  const bySource = new Map();
+  for (const w of weeks) {
+    const key = w.source || 'upload';
+    if (!bySource.has(key)) bySource.set(key, []);
+    bySource.get(key).push(w);
+  }
+  return bySource;
+}
+async function storeUploads(weeks) {
+  try {
+    for (const [filename, wk] of groupWeeksBySource(weeks).entries()) {
+      await query(`INSERT INTO rota_uploads (filename, parsed) VALUES ($1,$2)`, [filename, JSON.stringify(wk)]);
+    }
+  } catch (e) { console.error('storeUploads failed (non-fatal):', e.message); }
 }
 
 // ---- Periods (a.k.a. months) ----
@@ -183,6 +207,68 @@ app.get('/api/months', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---- Uploaded-rota library -------------------------------------------------
+
+// List stored rota uploads with a rough coverage hint (month + day range).
+app.get('/api/uploads', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await query(`SELECT id, filename, parsed, created_at FROM rota_uploads ORDER BY created_at DESC, id DESC`);
+    res.json(rows.map((r) => {
+      const weeks = r.parsed || [];
+      const hints = [...new Set(weeks.map((w) => w.monthHint).filter(Boolean))];
+      const days = [];
+      for (const w of weeks) for (const d of (w.days || [])) if (d && d.day != null) days.push(d.day);
+      return {
+        id: r.id, filename: r.filename, createdAt: r.created_at,
+        weeks: weeks.length, monthHints: hints,
+        dayRange: days.length ? [Math.min(...days), Math.max(...days)] : null,
+      };
+    }));
+  } catch (e) { next(e); }
+});
+
+app.delete('/api/uploads/:id', requireAuth, async (req, res, next) => {
+  try {
+    await query(`DELETE FROM rota_uploads WHERE id=$1`, [parseInt(req.params.id, 10)]);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// Build a new period from already-stored uploads (no re-upload needed).
+// Body: { month, year, startDate?, endDate?, label?, uploadIds? }.
+app.post('/api/months/from-stored', requireAuth, async (req, res, next) => {
+  try {
+    let { month, year, startDate, endDate, label, uploadIds } = req.body;
+    const r = (Array.isArray(uploadIds) && uploadIds.length)
+      ? await query(`SELECT parsed FROM rota_uploads WHERE id = ANY($1)`, [uploadIds])
+      : await query(`SELECT parsed FROM rota_uploads`);
+    const weeks = [];
+    for (const row of r.rows) for (const w of (row.parsed || [])) weeks.push(w);
+    if (!weeks.length) return res.status(400).json({ error: 'No stored rotas to build from. Upload some first.' });
+
+    if (!startDate || !endDate) {
+      const mn = monthNumFromName(month);
+      const yr = parseInt(year, 10);
+      if (!mn || !yr) return res.status(400).json({ error: 'Provide start/end dates, or a month and year' });
+      const b = monthBracket(yr, mn);
+      startDate = b.start; endDate = b.end;
+    }
+    if (!ISO_RE.test(startDate) || !ISO_RE.test(endDate) || startDate > endDate) {
+      return res.status(400).json({ error: 'Invalid bracket dates' });
+    }
+    const sY = parseInt(startDate.slice(0, 4), 10);
+    const sM = parseInt(startDate.slice(5, 7), 10);
+    const lbl = (label && label.trim()) || `${MONTHS[sM - 1]} ${sY}`;
+    const monthRes = await query(
+      `INSERT INTO rota_months (label, month_num, year_num, start_date, end_date)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`, [lbl, sM, sY, startDate, endDate]);
+    const month0 = monthRes.rows[0];
+    const records = buildAllRecords(weeks, startDate, endDate);
+    const added = await insertRecords(month0.id, records);
+    res.status(201).json({ ...monthObj(month0), added });
+  } catch (e) { next(e); }
+});
+
 // Create a period from parsed weeks + a bracket (start/end dates). If only a
 // month name + year are given, the bracket defaults to that whole calendar month.
 app.post('/api/months', requireAuth, async (req, res, next) => {
@@ -191,6 +277,7 @@ app.post('/api/months', requireAuth, async (req, res, next) => {
     if (!Array.isArray(weeks) || weeks.length === 0) {
       return res.status(400).json({ error: 'No parsed rota data received' });
     }
+    await storeUploads(weeks);
     if (!startDate || !endDate) {
       const mn = monthNumFromName(month);
       const yr = parseInt(year, 10);
@@ -226,7 +313,7 @@ app.get('/api/months/:id', requireAuth, async (req, res, next) => {
     const row = m.rows[0];
     const inBracket = await query(
       `SELECT * FROM shifts WHERE month_id=$1 AND work_date BETWEEN $2 AND $3
-        ORDER BY person_key, work_date`, [id, dstr(row.start_date), dstr(row.end_date)]);
+        ORDER BY person_seq, person_key, work_date`, [id, dstr(row.start_date), dstr(row.end_date)]);
     const total = await query(`SELECT COUNT(*)::int AS c FROM shifts WHERE month_id=$1`, [id]);
     const shifts = inBracket.rows.map(rowToShift);
     res.json({
@@ -266,6 +353,7 @@ app.post('/api/months/:id/rotas', requireAuth, async (req, res, next) => {
     if (!Array.isArray(weeks) || weeks.length === 0) {
       return res.status(400).json({ error: 'No parsed rota data received' });
     }
+    await storeUploads(weeks);
     const m = await query(`SELECT * FROM rota_months WHERE id=$1`, [id]);
     if (!m.rows.length) return res.status(404).json({ error: 'Period not found' });
     const row = m.rows[0];
