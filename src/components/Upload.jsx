@@ -10,8 +10,11 @@ function monShort(name) {
 }
 function rangeLabel(a, b) {
   if (!a) return '';
-  const f = (iso) => { const [, m, d] = iso.split('-').map(Number); return `${d} ${MO[m - 1]}`; };
-  return a === b || !b ? f(a) : `${f(a)} - ${f(b)}`;
+  const p = (iso) => { const [y, m, d] = iso.split('-').map(Number); return { y, s: `${d} ${MO[m - 1]}` }; };
+  const A = p(a);
+  if (!b || a === b) return `${A.s} ${A.y}`;
+  const B = p(b);
+  return A.y === B.y ? `${A.s} - ${B.s} ${B.y}` : `${A.s} ${A.y} - ${B.s} ${B.y}`;
 }
 function dupLabel(d) {
   return rangeLabel(d.coversStart, d.coversEnd) || `${monShort(d.monthHint)}`.trim() || d.signature;
@@ -39,8 +42,9 @@ function RotaLibrary() {
   const [duplicates, setDuplicates] = useState(null);
   const [needsInput, setNeedsInput] = useState(null); // weeks the parser couldn't place
   const [answers, setAnswers] = useState({});    // index -> { month, year }
+  const [selected, setSelected] = useState(() => new Set()); // stored rota ids ticked for deletion
 
-  async function loadStored() { try { setStored(await api.listRotas()); } catch { /* ignore */ } }
+  async function loadStored() { try { setStored(await api.listRotas()); setSelected(new Set()); } catch { /* ignore */ } }
   useEffect(() => { loadStored(); }, []);
 
   function reset() { setWeeks(null); setDuplicates(null); setNeedsInput(null); setAnswers({}); }
@@ -178,14 +182,39 @@ function RotaLibrary() {
         </div>
       )}
 
-      <div className="stored-head"><h4>Stored rotas {stored.length ? `(${stored.length})` : ''}</h4></div>
+      <div className="stored-head">
+        <h4>Stored rotas {stored.length ? `(${stored.length})` : ''}</h4>
+        {stored.length > 0 && (
+          <div className="stored-actions">
+            <label className="muted small">
+              <input type="checkbox"
+                checked={selected.size === stored.length}
+                ref={(el) => { if (el) el.indeterminate = selected.size > 0 && selected.size < stored.length; }}
+                onChange={(e) => setSelected(e.target.checked ? new Set(stored.map((u) => u.id)) : new Set())} />
+              {' '}Select all
+            </label>
+            <button type="button" className="del-text" disabled={!selected.size}
+              onClick={async () => {
+                if (confirm(`Delete ${selected.size} selected rota${selected.size === 1 ? '' : 's'}?`)) {
+                  await api.deleteRotas([...selected]); loadStored();
+                }
+              }}>Delete selected{selected.size ? ` (${selected.size})` : ''}</button>
+            <button type="button" className="del-text"
+              onClick={async () => { if (confirm('Delete ALL stored rotas? This cannot be undone.')) { await api.deleteAllRotas(); loadStored(); } }}>Delete all</button>
+          </div>
+        )}
+      </div>
       {stored.length === 0 ? (
         <p className="muted small">No rotas uploaded yet.</p>
       ) : (
         <ul className="stored-list">
           {stored.map((u) => (
             <li key={u.id}>
-              <span className="stored-name">{rangeLabel(u.coversStart, u.coversEnd) || monShort(u.monthHint)}</span>
+              <label className="stored-pick">
+                <input type="checkbox" checked={selected.has(u.id)}
+                  onChange={(e) => setSelected((prev) => { const n = new Set(prev); e.target.checked ? n.add(u.id) : n.delete(u.id); return n; })} />
+                <span className="stored-name">{rangeLabel(u.coversStart, u.coversEnd) || monShort(u.monthHint)}</span>
+              </label>
               <span className="muted small">{u.source || ''}</span>
               <button className="del" title="Remove from library"
                 onClick={async () => { if (confirm('Remove this rota from the library?')) { await api.deleteRota(u.id); loadStored(); } }}>x</button>

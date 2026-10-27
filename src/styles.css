@@ -347,3 +347,10 @@ tfoot .wtot { background: #faf7f2; }
 /* --- Added: "which month?" prompt for unreadable headings --- */
 .needs-month .month-ask { border: 1px solid #ead9a6; border-radius: 8px; padding: 0.5rem 0.7rem; margin: 0.5rem 0; background: #fffdf6; }
 .needs-month .month-ask .row { margin-top: 0.3rem; }
+
+/* --- Added: stored-rota multi-select + bulk delete --- */
+.stored-head { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; }
+.stored-actions { display: flex; align-items: center; gap: 0.8rem; }
+.stored-actions .del-text { background: none; border: none; color: #b23b3b; cursor: pointer; font-size: 0.85rem; padding: 0; }
+.stored-actions .del-text:disabled { color: #c9b9b9; cursor: default; }
+.stored-pick { display: flex; align-items: center; gap: 0.5rem; flex: 1; cursor: pointer; }

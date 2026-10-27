@@ -48,6 +48,8 @@ export const api = {
   listRotas: () => request('/rotas'),
   ingestRotas: (weeks, replace = false) => request('/rotas/ingest', { method: 'POST', body: { weeks, replace } }),
   deleteRota: (id) => request(`/rotas/${id}`, { method: 'DELETE' }),
+  deleteRotas: (ids) => request('/rotas/delete', { method: 'POST', body: { ids } }),
+  deleteAllRotas: () => request('/rotas/delete', { method: 'POST', body: { all: true } }),
   // Create a period from the STORED rotas that fall in the bracket.
   saveMonth: (payload) => request('/months', { method: 'POST', body: payload }),
   updateMonth: (id, patch) => request(`/months/${id}`, { method: 'PATCH', body: patch }),
