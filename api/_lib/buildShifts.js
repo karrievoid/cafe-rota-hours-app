@@ -53,25 +53,23 @@ export function resolveDate(monthName, day, startISO, endISO) {
 //                    week is ambiguous, the closest placement.
 // Returns an array of 7 ISO strings (null for numberless columns), or null if
 // the week cannot be placed sensibly.
-export function resolveWeekDates(seq, hintName, startISO, endISO) {
+export function resolveWeekDates(seq, hintName, startISO, endISO, requireWeekday = false) {
   const hintIdx = MONTHS.findIndex((m) => m.toLowerCase() === String(hintName || '').toLowerCase());
   const startY = parseInt(startISO.slice(0, 4), 10);
   const endY = parseInt(endISO.slice(0, 4), 10);
   const years = [...new Set([startY - 1, startY, endY, endY + 1])];
   const dayMs = 86400000;
   const mid = (Date.parse(startISO) + Date.parse(endISO)) / 2;
-  let best = null; // { dist, dates }
+  let best = null; // { score, dist, dates }
 
   for (const Y of years) {
-    // Scan a window: if we have a hint month, scan a month either side of it;
-    // otherwise scan the whole year. We look for a start date whose following 7
-    // day-numbers match the sequence.
     const from = Date.UTC(Y, (hintIdx >= 0 ? hintIdx : 0) - 1, 1);
     const to = Date.UTC(Y, (hintIdx >= 0 ? hintIdx : 11) + 2, 0);
     for (let t = from; t <= to; t += dayMs) {
       const dates = [];
       let ok = true;
       let hasHint = false;
+      let weekdayAligned = true;
       let anchorMs = null;
       for (let i = 0; i < 7; i++) {
         const dt = new Date(t + i * dayMs);
@@ -81,26 +79,50 @@ export function resolveWeekDates(seq, hintName, startISO, endISO) {
         if (seq[i] != null && seq[i] !== d) { ok = false; break; }
         dates.push(seq[i] == null ? null : iso(y, m, d));
         if (hintIdx >= 0 && m === hintIdx) hasHint = true;
+        // Column i is weekday i (Monday=0 .. Sunday=6). JS getUTCDay: Sun=0..Sat=6,
+        // so the expected JS weekday for column i is (i + 1) % 7.
+        if (seq[i] != null && dt.getUTCDay() !== ((i + 1) % 7)) weekdayAligned = false;
         if (anchorMs == null && seq[i] != null) anchorMs = t + i * dayMs;
       }
       if (!ok || anchorMs == null) continue;
-      if (hintIdx >= 0 && !hasHint) continue; // hint must appear in the placement
+      if (hintIdx >= 0 && !hasHint) continue;         // hint must appear in the placement
+      if (requireWeekday && !weekdayAligned) continue; // dates must fall on the right weekdays
       const dist = Math.abs(anchorMs - mid);
-      if (!best || dist < best.dist) best = { dist, dates };
+      // Prefer weekday-aligned placements (the printed weekday columns pin the year),
+      // then the one closest to the bracket/reference.
+      const score = (weekdayAligned ? 0 : 1);
+      if (!best || score < best.score || (score === best.score && dist < best.dist)) {
+        best = { score, dist, dates };
+      }
     }
   }
   return best ? best.dates : null;
+}
+
+// Resolve using an explicit month + year the manager typed (day numbers still
+// decide the exact dates; the month/year fix which calendar month they sit in).
+export function resolveWeekWithMonthYear(seq, monthName, year) {
+  const mn = monthNumFromName(monthName);
+  const y = parseInt(year, 10);
+  if (!mn || !y) return null;
+  const b = monthBracket(y, mn);
+  return resolveWeekDates(seq, monthName, b.start, b.end, false);
 }
 
 // Place a single week on the real calendar nearest to a reference date (today),
 // used when STORING a week so it gets a correct date range / label independent of
 // any pay period. Returns { start, end } ISO strings, or null.
 export function resolveWeekAbsolute(seq, hintName, refISO) {
+  // Without a readable month heading we will NOT guess - the month is genuinely
+  // unknown (weekday + day-number alone fit many months). Caller hands it to the
+  // manager to enter month + year instead.
+  if (!hintName) return null;
   const ref = refISO || new Date().toISOString().slice(0, 10);
   const refMs = Date.parse(ref);
-  const startISO = new Date(refMs - 200 * 86400000).toISOString().slice(0, 10);
-  const endISO = new Date(refMs + 200 * 86400000).toISOString().slice(0, 10);
-  const dates = resolveWeekDates(seq, hintName, startISO, endISO);
+  const startISO = new Date(refMs - 280 * 86400000).toISOString().slice(0, 10);
+  const endISO = new Date(refMs + 280 * 86400000).toISOString().slice(0, 10);
+  // Require the weekday columns to line up, which pins the exact year.
+  const dates = resolveWeekDates(seq, hintName, startISO, endISO, true);
   if (!dates) return null;
   const nn = dates.filter(Boolean);
   if (!nn.length) return null;

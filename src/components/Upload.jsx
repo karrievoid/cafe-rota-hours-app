@@ -1,12 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api.js';
 import { toast } from '../toast.js';
-import { defaultBracket, fmtDateFull } from '../util.js';
+import { defaultBracket, fmtDateFull, MONTHS } from '../util.js';
 
 const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function monShort(name) {
-  const i = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
-    .findIndex((m) => m.toLowerCase() === String(name).toLowerCase());
+  const i = MONTHS.findIndex((m) => m.toLowerCase() === String(name).toLowerCase());
   return i === -1 ? (name || '') : MO[i];
 }
 function rangeLabel(a, b) {
@@ -18,9 +17,6 @@ function dupLabel(d) {
   return rangeLabel(d.coversStart, d.coversEnd) || `${monShort(d.monthHint)}`.trim() || d.signature;
 }
 
-// Two steps, as separate cards:
-//  Step 1 - Upload rotas: stored in the canonical rota table; re-upload replaces.
-//  Step 2 - Create period: builds a view from the stored rotas inside a bracket.
 export default function Upload({ onCreated }) {
   return (
     <>
@@ -32,36 +28,70 @@ export default function Upload({ onCreated }) {
 
 /* ---------------- Step 1: the uploaded-rota library ---------------- */
 function RotaLibrary() {
+  const thisYear = new Date().getFullYear();
   const [stored, setStored] = useState([]);
   const [files, setFiles] = useState([]);
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState('');
   const [error, setError] = useState('');
   const [warnings, setWarnings] = useState([]);
-  const [pending, setPending] = useState(null); // { weeks, duplicates } awaiting replace confirm
+  const [weeks, setWeeks] = useState(null);      // parsed weeks kept for follow-up steps
+  const [duplicates, setDuplicates] = useState(null);
+  const [needsInput, setNeedsInput] = useState(null); // weeks the parser couldn't place
+  const [answers, setAnswers] = useState({});    // index -> { month, year }
 
   async function loadStored() { try { setStored(await api.listRotas()); } catch { /* ignore */ } }
   useEffect(() => { loadStored(); }, []);
 
+  function reset() { setWeeks(null); setDuplicates(null); setNeedsInput(null); setAnswers({}); }
+
+  async function handleResult(res, wks) {
+    if (res.needsInput && res.needsInput.length) {
+      const init = {};
+      for (const n of res.needsInput) init[n.index] = { month: MONTHS[0], year: thisYear };
+      setAnswers(init); setNeedsInput(res.needsInput); setDuplicates(null);
+      return;
+    }
+    if (res.applied === false && res.duplicates && res.duplicates.length) {
+      setDuplicates(res.duplicates); setNeedsInput(null);
+      return;
+    }
+    // success
+    setFiles([]); reset();
+    const bits = [];
+    if (res.added) bits.push(`${res.added} added`);
+    if (res.replaced) bits.push(`${res.replaced} replaced`);
+    toast(bits.length ? `Rotas saved (${bits.join(', ')})` : 'Rotas saved');
+    loadStored();
+  }
+
   async function upload(e) {
     e.preventDefault();
     if (!files.length) { setError('Choose at least one rota PDF.'); return; }
-    setBusy(true); setError(''); setWarnings([]); setPending(null);
+    setBusy(true); setError(''); setWarnings([]); reset();
     try {
       setStep('Reading PDFs...');
       const fd = new FormData();
       for (const f of files) fd.append('files', f);
-      const { weeks, warnings: w } = await api.parsePdfs(fd);
+      const { weeks: wks, warnings: w } = await api.parsePdfs(fd);
       if (w && w.length) setWarnings(w);
-
+      setWeeks(wks);
       setStep('Saving to the rota library...');
-      const res = await api.ingestRotas(weeks, false);
-      if (res.applied === false && res.duplicates && res.duplicates.length) {
-        // Some of these weeks are already stored - ask before replacing.
-        setPending({ weeks, duplicates: res.duplicates });
-        return;
-      }
-      finishUpload(res);
+      const res = await api.ingestRotas(wks, false);
+      await handleResult(res, wks);
+    } catch (err) { setError(err.message); toast(err.message, 'error'); }
+    finally { setBusy(false); setStep(''); }
+  }
+
+  // Re-send after the manager has told us the month/year for unplaced weeks.
+  async function submitAnswers(e) {
+    e.preventDefault();
+    const wks = weeks.map((w, i) => (answers[i] ? { ...w, forceMonth: answers[i].month, forceYear: answers[i].year } : w));
+    setBusy(true); setStep('Saving to the rota library...'); setError('');
+    try {
+      setWeeks(wks);
+      const res = await api.ingestRotas(wks, false);
+      await handleResult(res, wks);
     } catch (err) { setError(err.message); toast(err.message, 'error'); }
     finally { setBusy(false); setStep(''); }
   }
@@ -69,20 +99,10 @@ function RotaLibrary() {
   async function confirmReplace() {
     setBusy(true); setStep('Replacing...');
     try {
-      const res = await api.ingestRotas(pending.weeks, true);
-      setPending(null);
-      finishUpload(res);
+      const res = await api.ingestRotas(weeks, true);
+      await handleResult(res, weeks);
     } catch (err) { setError(err.message); toast(err.message, 'error'); }
     finally { setBusy(false); setStep(''); }
-  }
-
-  function finishUpload(res) {
-    setFiles([]);
-    const bits = [];
-    if (res.added) bits.push(`${res.added} added`);
-    if (res.replaced) bits.push(`${res.replaced} replaced`);
-    toast(bits.length ? `Rotas saved (${bits.join(', ')})` : 'Rotas saved');
-    loadStored();
   }
 
   return (
@@ -91,42 +111,74 @@ function RotaLibrary() {
       <p className="muted">
         Add the weekly rota PDFs. They're stored here as the single source of truth -
         day by day, per person. Re-uploading a week you already have just updates that
-        one (you'll be asked to confirm first). Create a pay period below once they're in.
+        one (you'll be asked to confirm). Create a pay period below once they're in.
       </p>
 
-      <form onSubmit={upload}>
-        <label className="field">
-          <span>Rota PDFs</span>
-          <input type="file" accept="application/pdf" multiple disabled={busy}
-            onChange={(e) => setFiles([...e.target.files])} />
-        </label>
-        {files.length > 0 && <ul className="filelist">{files.map((f) => <li key={f.name}>{f.name}</li>)}</ul>}
-
-        {busy && <div className="processing"><span className="spinner" /> {step || 'Working...'}</div>}
-
-        {pending && (
-          <div className="warn">
-            Already in the library: {pending.duplicates.map(dupLabel).join(', ')}.
-            <div className="modal-actions" style={{ marginTop: '0.5rem' }}>
-              <button type="button" className="ghost" onClick={() => setPending(null)} disabled={busy}>Keep existing</button>
-              <button type="button" className="primary" onClick={confirmReplace} disabled={busy}>Replace with new upload</button>
+      {!needsInput && !duplicates && (
+        <form onSubmit={upload}>
+          <label className="field">
+            <span>Rota PDFs</span>
+            <input type="file" accept="application/pdf" multiple disabled={busy}
+              onChange={(e) => setFiles([...e.target.files])} />
+          </label>
+          {files.length > 0 && <ul className="filelist">{files.map((f) => <li key={f.name}>{f.name}</li>)}</ul>}
+          {busy && <div className="processing"><span className="spinner" /> {step || 'Working...'}</div>}
+          {warnings.length > 0 && (
+            <div className="warn">
+              Some pages couldn&apos;t be read fully:
+              <ul>{warnings.map((w, i) => <li key={i}>{w.source ? `${w.source}: ` : ''}{w.page ? `page ${w.page} - ` : ''}{w.reason}</li>)}</ul>
             </div>
-          </div>
-        )}
+          )}
+          {error && <div className="error">{error}</div>}
+          <button className="primary" disabled={busy || !files.length}>{busy ? (step || 'Working...') : 'Upload to library'}</button>
+        </form>
+      )}
 
-        {warnings.length > 0 && (
+      {needsInput && (
+        <form className="needs-month" onSubmit={submitAnswers}>
           <div className="warn">
-            Some pages couldn&apos;t be read fully:
-            <ul>{warnings.map((w, i) => <li key={i}>{w.source ? `${w.source}: ` : ''}{w.page ? `page ${w.page} - ` : ''}{w.reason}</li>)}</ul>
+            Couldn&apos;t read the month on {needsInput.length} rota{needsInput.length === 1 ? '' : 's'}.
+            Tell me which month and year each one is for:
           </div>
-        )}
-        {error && <div className="error">{error}</div>}
-        {!pending && <button className="primary" disabled={busy || !files.length}>{busy ? (step || 'Working...') : 'Upload to library'}</button>}
-      </form>
+          {needsInput.map((n) => (
+            <div className="month-ask" key={n.index}>
+              <div className="muted small">
+                {n.source ? `${n.source} - ` : ''}week: {n.days.map((d) => `${d.weekday} ${d.day}`).join(', ')}
+              </div>
+              <div className="row">
+                <label className="field"><span>Month</span>
+                  <select value={answers[n.index]?.month || MONTHS[0]}
+                    onChange={(e) => setAnswers((a) => ({ ...a, [n.index]: { ...a[n.index], month: e.target.value } }))}>
+                    {MONTHS.map((m) => <option key={m}>{m}</option>)}
+                  </select>
+                </label>
+                <label className="field"><span>Year</span>
+                  <input type="number" value={answers[n.index]?.year || thisYear}
+                    onChange={(e) => setAnswers((a) => ({ ...a, [n.index]: { ...a[n.index], year: parseInt(e.target.value, 10) } }))} />
+                </label>
+              </div>
+            </div>
+          ))}
+          {busy && <div className="processing"><span className="spinner" /> {step || 'Working...'}</div>}
+          {error && <div className="error">{error}</div>}
+          <div className="modal-actions">
+            <button type="button" className="ghost" onClick={() => { setFiles([]); reset(); }} disabled={busy}>Cancel</button>
+            <button type="submit" className="primary" disabled={busy}>Save with these months</button>
+          </div>
+        </form>
+      )}
 
-      <div className="stored-head">
-        <h4>Stored rotas {stored.length ? `(${stored.length})` : ''}</h4>
-      </div>
+      {duplicates && (
+        <div className="warn">
+          Already in the library: {duplicates.map(dupLabel).join(', ')}.
+          <div className="modal-actions" style={{ marginTop: '0.5rem' }}>
+            <button type="button" className="ghost" onClick={() => { setFiles([]); reset(); }} disabled={busy}>Keep existing</button>
+            <button type="button" className="primary" onClick={confirmReplace} disabled={busy}>Replace with new upload</button>
+          </div>
+        </div>
+      )}
+
+      <div className="stored-head"><h4>Stored rotas {stored.length ? `(${stored.length})` : ''}</h4></div>
       {stored.length === 0 ? (
         <p className="muted small">No rotas uploaded yet.</p>
       ) : (
@@ -186,7 +238,6 @@ function CreatePeriod({ onCreated }) {
       <label className="field"><span>Label (optional)</span>
         <input placeholder="e.g. June payroll" value={label} onChange={(e) => setLabel(e.target.value)} disabled={busy} />
       </label>
-
       {busy && <div className="processing"><span className="spinner" /> Building period from stored rotas...</div>}
       {error && <div className="error">{error}</div>}
       <button className="primary" disabled={busy}>{busy ? 'Building...' : 'Create period'}</button>

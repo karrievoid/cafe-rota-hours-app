@@ -343,3 +343,7 @@ tfoot .wtot { background: #faf7f2; }
 
 .stored-head { margin-top: 0.8rem; border-top: 1px solid #efe7cf; padding-top: 0.5rem; }
 .stored-head h4 { margin: 0; }
+
+/* --- Added: "which month?" prompt for unreadable headings --- */
+.needs-month .month-ask { border: 1px solid #ead9a6; border-radius: 8px; padding: 0.5rem 0.7rem; margin: 0.5rem 0; background: #fffdf6; }
+.needs-month .month-ask .row { margin-top: 0.3rem; }

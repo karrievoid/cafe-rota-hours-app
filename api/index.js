@@ -5,7 +5,7 @@ import cors from 'cors';
 
 import { query, ensureSchema } from './_lib/db.js';
 import { signToken, requireAuth, hasManager, registerManager, loginManager, checkStaffPin, getStaffPin, setStaffPin, setSecurity, getSecurity, getSecurityQuestion, resetWithSecurity, changePassword } from './_lib/auth.js';
-import { buildAllRecords, monthNumFromName, monthBracket, MONTHS, resolveWeekAbsolute } from './_lib/buildShifts.js';
+import { buildAllRecords, monthNumFromName, monthBracket, MONTHS, resolveWeekAbsolute, resolveWeekWithMonthYear } from './_lib/buildShifts.js';
 import { paidMinutesFromSpan } from './_lib/shifts.js';
 
 const app = express();
@@ -194,10 +194,28 @@ function weekSeq(w) { return (w.days || []).map((d) => (d && d.day != null ? d.d
 // so each actual week is stored once and different years never collide. Falls back
 // to month-hint + sequence if the week can't be placed.
 function weekIdentity(w) {
-  const abs = resolveWeekAbsolute(weekSeq(w), w.monthHint, new Date().toISOString().slice(0, 10));
+  const seq = weekSeq(w);
+  // Manager-supplied month + year (for weeks with no readable heading).
+  if (w.forceMonth && w.forceYear) {
+    const dates = resolveWeekWithMonthYear(seq, w.forceMonth, w.forceYear);
+    const nn = (dates || []).filter(Boolean);
+    if (nn.length) {
+      w.monthHint = w.forceMonth; // so the period build can place it later
+      return { signature: nn[0], coversStart: nn[0], coversEnd: nn[nn.length - 1] };
+    }
+  }
+  // Otherwise infer from the heading + weekday columns (pins the year).
+  const abs = resolveWeekAbsolute(seq, w.monthHint, new Date().toISOString().slice(0, 10));
   if (abs) return { signature: abs.start, coversStart: abs.start, coversEnd: abs.end };
-  const seq = weekSeq(w).map((d) => (d == null ? 'x' : d)).join('-');
-  return { signature: `${w.monthHint || '?'}|${seq}`, coversStart: null, coversEnd: null };
+  return null; // unresolved - needs the manager to say which month/year
+}
+
+// Short preview of a week's dates for the "which month?" prompt.
+const WD = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+function weekPreview(w) {
+  const out = [];
+  (w.days || []).forEach((d, i) => { if (d && d.day != null) out.push({ weekday: WD[i], day: d.day }); });
+  return out;
 }
 
 async function loadStoredWeeks() {
@@ -260,8 +278,18 @@ app.post('/api/rotas/ingest', requireAuth, async (req, res, next) => {
     if (!Array.isArray(weeks) || weeks.length === 0) {
       return res.status(400).json({ error: 'No parsed rota data received' });
     }
+    // Resolve every week to a real date identity. Any we can't place (no readable
+    // month heading and no manager-supplied month/year) are returned as needsInput.
     const byId = new Map(); // signature -> { w, id }
-    for (const w of weeks) { const id = weekIdentity(w); byId.set(id.signature, { w, id }); }
+    const needsInput = [];
+    weeks.forEach((w, index) => {
+      const id = weekIdentity(w);
+      if (!id) { needsInput.push({ index, source: w.source || null, days: weekPreview(w) }); return; }
+      byId.set(id.signature, { w, id });
+    });
+    if (needsInput.length) {
+      return res.json({ applied: false, needsInput });
+    }
     const sigs = [...byId.keys()];
     const existing = await query(`SELECT signature FROM rota_weeks WHERE signature = ANY($1)`, [sigs]);
     const existingSigs = new Set(existing.rows.map((r) => r.signature));
