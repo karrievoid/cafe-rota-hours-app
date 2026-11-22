@@ -1,26 +1,43 @@
 # Café Rota Hours
 
-A small web app that turns weekly cafe rota PDFs into monthly paid-hours totals per person.
-Upload the rotas, adjust any shifts that changed on the paper copy, and read off one
-figure per person to hand to payroll — instead of an hour with a calculator.
+Every month, staff hours at the café where I work had to be added up by hand for payroll. This app does it instead: upload the weekly rota PDFs, check anything it flags, and read off one total per person.
 
-**Stack:** React (Vite) front end · Express (Node) API · **Python (pdfplumber) PDF parser** · Postgres.
-Deploys to **Vercel** on the free plan — Node and Python run as serverless functions side by side.
+It's in live use at the café every month – I review it with the owner and release fixes from his feedback.
+
+**Live site:** https://cafe-rota-hours-app.vercel.app (manager login required)
+
+**Stack:** React (Vite) · Express (Node) · Python (pdfplumber) · PostgreSQL (Neon) · Vercel
+
+![Weekly rota grid](docs/screenshots/rota-hours-weekly.png)
+
+![Monthly totals with a flagged cell](docs/screenshots/rota-hours-totals.png)
+
+*Screenshots use made-up staff and shifts.*
 
 ## What it does
 
-- **Upload** one or more weekly rota PDFs for a payroll month.
-- **Parses the table** by text position (Python/pdfplumber), so multi-word and split shifts stay in the right day.
-- **Trims other months.** Weekly rotas often show a few days of the previous/next month;
-  only the days belonging to the month you pick are counted.
-- **Applies the break rule.** Any shift longer than 6 hours loses a 20-minute unpaid break.
-  Exactly 6 hours keeps all 6.
-- **Handles split / role-change shifts** like `6.45-8B, -15.00 F&G` (one block, 06:45–15:00).
-- **Strips role tags** (`K&KP`, `KP`, `F&G`, `Bake`, `Barista`, `floor till hatch`) — they don't affect hours.
-- **Payable leave.** `OFF (L)` days are flagged as leave; you type the hours to pay and no break is deducted.
-- **Keeps two people with the same name separate** (e.g. the two "Lois"); each row is its own person and can be renamed.
-- **Editable grid.** Change a start/end time and paid hours recompute instantly; add or delete shifts; override any figure.
-- **Summary** of total hours per person, with copy-to-clipboard and CSV download.
+- **Upload** weekly rota PDFs into a library; re-uploading a week replaces it.
+- **Reads the table by text position** (Python/pdfplumber), so multi-word and split shifts stay in the right day.
+- **Builds a pay period** from the stored rotas for any date range, so days from the next or previous month are left out.
+- **Applies the break rule:** a shift longer than 6 hours loses a 20-minute unpaid break. Exactly 6 hours keeps all 6, and a "no break" toggle pays the full time when the break wasn't taken.
+- **Handles split and role-change shifts** like `6.45-8B, 15.00 F&G` (one block, 06:45–15:00) and strips role tags (`K&KP`, `F&G`, `Bake`…).
+- **Paid leave:** `OFF (L)` days are marked as leave; you enter the hours to pay, with no break deducted.
+- **Never guesses:** any cell it can't read (usually a typo on the rota) is flagged **check**, listed for a quick fix, and left out of the totals until it's fixed.
+- **Keeps two people with the same name separate**; each row can be renamed.
+- **Editable grid** (weekly or per person) with manual save, plus copy-to-clipboard and CSV export of the totals.
+- **Staff change requests:** staff can submit shift changes on a PIN-protected page (`#request`); the manager accepts or rejects them.
+
+## Rota template
+
+[`templates/Cafe Rota Template.xlsx`](templates/Cafe%20Rota%20Template.xlsx) is an Excel template in the layout the parser expects. Type the week's Monday, fill in the shifts, then **Save As → PDF (Active sheet)** and upload it.
+
+## How I used AI
+
+The PDF-parsing function (`api/parse.py`) was written with AI, as my Python was rusty. I checked its output against months that had already been worked out before relying on it. The API, pay rules, database and front end are my own.
+
+## Next
+
+- Automated tests for the pay rules (`api/_lib/shifts.js`).
 
 ## Architecture
 
@@ -29,18 +46,14 @@ Browser (React)
    │  1. POST /api/parse   (PDF files)  ─────────►  Python function  (api/parse.py, pdfplumber)
    │  ◄── weeks JSON (raw weekly grid) ───────────
    │
-   │  2. POST /api/months  (weeks + month/year) ─►  Node/Express     (api/index.js)
-   │                                                 trims month, applies hour rules,
-   │  ◄── saved month id ─────────────────────────   saves to Postgres
+   │  2. POST /api/rotas/ingest, /api/months ────►  Node/Express     (api/index.js)
+   │                                                 stores rotas, builds pay periods,
+   │  ◄── saved period id ────────────────────────   applies hour rules, saves to Postgres
    │
    └─ 3. GET/PATCH /api/... editing & summary  ───►  Node/Express  ◄──►  Postgres
 ```
 
-Why split it this way: **pdfplumber** gives clean word-with-coordinate output, which makes the
-positional table extraction much simpler and sturdier than doing it in Node. Everything else —
-auth, the break/leave rules, month trimming, storage — stays in one place in the Node API. The
-browser calls each function directly (no server-to-server hops), which keeps local dev and Vercel
-routing simple and easy to inspect in the Network tab.
+Why split it this way: pdfplumber gives clean word-with-coordinate output, which makes the positional table extraction much simpler and sturdier than doing it in Node. Everything else – auth, the break and leave rules, date ranges, storage – stays in one place in the Node API.
 
 ## Project layout
 
@@ -50,50 +63,42 @@ api/
   index.js            Express app (one Vercel Node function)                 [/api/*]
   _lib/
     shifts.js         time parsing (HH.MM) + break rule
-    buildShifts.js    month trimming + shift records
+    buildShifts.js    date ranges + shift records
     db.js             Postgres pool + schema (auto-created)
-    auth.js           password -> JWT
-requirements.txt      Python deps (flask, pdfplumber, PyJWT, python-dotenv)
+    auth.js           manager account (bcrypt) -> JWT
 src/                  React front end (Vite)
+templates/            Excel rota template
+docs/screenshots/     README images
+requirements.txt      Python deps (flask, pdfplumber, PyJWT, python-dotenv)
 dev-server.js         runs the Node API locally
 vite.config.js        dev proxy: /api/parse -> :3002 (Python), /api/* -> :3001 (Node)
 vercel.json           build + routing (/api/parse -> Python, rest -> Node)
 ```
 
-## The hours logic (in one place: `api/_lib/shifts.js`)
+## The hours logic (`api/_lib/shifts.js`)
 
-Times are read as `HH.MM` (so `6.45` = 06:45, not 6.75 hours). For a shift, paid time is
-`end - start`, minus 20 minutes if that span is **strictly greater** than 6 hours. Split shifts
-written with a comma are treated as one continuous block from the first time to the last. Leave
-days are paid at whatever hours you enter, with no break deducted. Any cell the parser can't read
-is flagged `check` in the grid and excluded from totals until you fix it.
+Times are read as `HH.MM` (so `6.45` = 06:45, not 6.75 hours). Paid time is `end - start`, minus 20 minutes if that span is **strictly greater** than 6 hours. Split shifts written with a comma count as one continuous block from the first time to the last. Leave is paid at the hours entered, with no break deducted.
 
 ---
 
-# Run a dev version in VS Code (step by step)
+## Run it locally
 
-You'll run three things locally: the **Vite** web app, the **Node** API, and the **Python** parser.
-Nothing deploys until you choose to.
+You'll run three things: the **Vite** web app, the **Node** API and the **Python** parser.
 
-### 0. Prerequisites
-- **Node.js 18+** — https://nodejs.org
-- **Python 3.10+** — https://python.org
-- **VS Code** — https://code.visualstudio.com
-- A free **Postgres** database. Easiest is **Neon** (https://neon.tech) — sign up, create a project,
-  and copy the connection string (looks like `postgres://user:pass@ep-xxx.neon.tech/neondb?sslmode=require`).
+### 1. Prerequisites
 
-### 1. Get the code into a folder
-- Unzip `cafe-rota-hours.zip` somewhere sensible, e.g. `Documents\cafe-rota-hours`.
-- In VS Code: **File → Open Folder…** and pick that folder.
-- Open a terminal inside VS Code: **Terminal → New Terminal** (or `` Ctrl+` ``).
+- Node.js 18+, Python 3.10+
+- A free Postgres database – e.g. [Neon](https://neon.tech). Copy its connection string.
 
-### 2. Install the Node packages
+### 2. Get the code
+
 ```bash
+git clone https://github.com/karrievoid/cafe-rota-hours-app.git
+cd cafe-rota-hours-app
 npm install
 ```
 
-### 3. Set up the Python parser (its own virtual environment)
-In the same terminal, from the project folder:
+### 3. Set up the Python parser
 
 **Windows (PowerShell):**
 ```powershell
@@ -107,75 +112,48 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
-> If VS Code asks "We noticed a new virtual environment, do you want to select it?" — click **Yes**.
 
-### 4. Create your environment file
-Copy the example and fill it in:
+### 4. Environment file
+
 ```bash
 # Windows: copy .env.example .env
-# macOS/Linux:
 cp .env.example .env
 ```
-Open `.env` and set:
-- `DATABASE_URL` — your Neon connection string
-- `APP_PASSWORD` — the password you'll log in with
-- `JWT_SECRET` — any long random string (used by **both** the Node and Python functions)
 
-The database tables are created automatically the first time the app runs — no migration step.
+Fill in `.env`:
 
-### 5. Start all three processes
-Open **two terminals** in VS Code (click the **+** in the terminal panel for a second one).
+- `DATABASE_URL` – your Postgres connection string
+- `JWT_SECRET` – any long random string (shared by the Node and Python functions)
+- `STAFF_PIN` – optional; the PIN for the staff request page (can also be set in the app)
 
-**Terminal 1 — Python parser** (make sure the venv is active; you'll see `(venv)` in the prompt):
+Tables are created automatically on first run.
+
+### 5. Start it
+
+Terminal 1 – Python parser (venv active):
 ```bash
 python api/parse.py
 ```
-It should say it's running on `http://127.0.0.1:3002`.
-
-**Terminal 2 — Node API + web app together:**
+Terminal 2 – Node API and web app:
 ```bash
 npm run dev
 ```
-This starts the Express API on **:3001** and the Vite dev server on **:5173**.
 
-### 6. Open the app
-Go to **http://localhost:5173**. Sign in with your `APP_PASSWORD`.
-Upload the sample rota PDFs, pick the payroll month/year, and you'll see the editable grid and totals.
-
-### 7. How to watch it working (for inspecting / learning)
-- **Network tab** (browser DevTools → Network): you'll see the two calls — `POST /api/parse`
-  (PDF → weeks) then `POST /api/months` (save). Click each to see the JSON.
-- **Terminal 1** prints Python/pdfplumber activity; **Terminal 2** prints Express logs.
-- **The data:** open your Neon dashboard → SQL editor → `SELECT * FROM shifts;` to see stored rows.
-- **Good places to read the code:** `api/parse.py` (PDF extraction), `api/_lib/shifts.js`
-  (the hour/break rule), `api/_lib/buildShifts.js` (month trimming), `src/components/RotaGrid.jsx` (the editable grid).
+Open http://localhost:5173. The first visit asks you to create the manager account (email and password).
 
 ### Common hiccups
-- **Parse call fails / 502 on upload:** the Python terminal (Terminal 1) isn't running, or the venv
-  isn't active. Restart it.
-- **"DATABASE_URL is not set":** your `.env` isn't filled in, or you started the servers before saving it.
-- **Login fails:** `APP_PASSWORD` in `.env` must match what you type.
-- **Port already in use:** something else is on 3001/3002/5173 — close it, or change the port in
-  `.env` (`PORT`, `PARSE_PORT`) and `vite.config.js`.
 
----
+- **Upload fails / 502:** the Python parser in Terminal 1 isn't running, or the venv isn't active.
+- **"DATABASE_URL is not set":** `.env` isn't filled in, or the servers started before you saved it.
+- **Port already in use:** change `PORT` / `PARSE_PORT` in `.env` and the ports in `vite.config.js`.
 
-## Deploy to Vercel (free, no custom domain needed)
+## Deploy to Vercel
 
-1. Push this folder to a GitHub repo.
-2. In Vercel: **New Project → import the repo**. It auto-detects Vite (Node) and the Python function.
-3. Add a Postgres database — **Vercel Postgres** (Storage tab) sets `DATABASE_URL` for you, or paste a **Neon** string.
-4. **Settings → Environment Variables**, add:
-   - `DATABASE_URL` — your Postgres string
-   - `APP_PASSWORD` — your login password
-   - `JWT_SECRET` — a long random string (same value shared by Node and Python)
-5. **Deploy.** You get a free `*.vercel.app` URL. `vercel.json` routes `/api/parse` to the Python
-   function and everything else to the Node function automatically.
+1. Import the repo into Vercel – it detects Vite and the Python function.
+2. Add `DATABASE_URL`, `JWT_SECRET` (and optionally `STAFF_PIN`) under **Settings → Environment Variables**.
+3. Deploy. `vercel.json` routes `/api/parse` to Python and everything else to Node.
 
-## Notes & limits
-- The parser is tuned to this rota template (month top-left, Mon–Sun columns, one person per row).
-  A very different layout may need the column detection in `api/parse.py` adjusted.
-- Everything is editable in the grid, so any rare mis-read is a quick manual fix — the totals never
-  silently trust a bad parse (unreadable cells are flagged and left out).
-- Auth is a single shared password, appropriate for one manager on a private URL. Swap in per-user
-  accounts later if needed.
+## Notes and limits
+
+- The parser is tuned to this café's rota layout (month top-left, Monday–Sunday columns, one person per row). The Excel template above produces exactly that layout.
+- One manager account per deployment.
