@@ -1,4 +1,4 @@
-# Rota Hours
+# Café Rota Hours
 
 A small web app that turns weekly cafe rota PDFs into monthly paid-hours totals per person.
 Upload the rotas, adjust any shifts that changed on the paper copy, and read off one
